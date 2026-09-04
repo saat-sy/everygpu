@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+from time import perf_counter_ns
 
 from safetensors.torch import load, save
 from websockets.asyncio.client import connect
@@ -9,24 +10,62 @@ from download import download_stage
 from stage_runtime import StageRuntime, load_stage
 
 
-async def run(url):
+def runtime_metrics(stage_runtime, node_id, gpu_ms, processing_ms, sample_ms=None):
+    allocated, reserved = stage_runtime.gpu_memory()
+    first_layer, last_layer = stage_runtime.stage["layers"]
+    metrics = {
+        "node_id": node_id,
+        "stage_id": stage_runtime.stage["id"],
+        "device": str(stage_runtime.device),
+        "layers": {"start": first_layer, "end": last_layer},
+        "gpu_ms": gpu_ms,
+        "processing_ms": processing_ms,
+        "gpu_memory_allocated_bytes": allocated,
+        "gpu_memory_reserved_bytes": reserved,
+    }
+    if sample_ms is not None:
+        metrics["sample_ms"] = sample_ms
+    return metrics
+
+
+async def run(url, configured_node_id=None):
     stage_runtime: StageRuntime | None = None
-    waiting_for_hidden_states = False
+    pending_hidden_command = None
+    node_id = configured_node_id
 
     async with connect(url, max_size=None) as ws:
         print("Connected to server")
         async for msg in ws:
             try:
                 if isinstance(msg, bytes):
-                    if not waiting_for_hidden_states:
+                    if pending_hidden_command is None:
                         raise ValueError("Received hidden states without a command")
                     if stage_runtime is None:
                         raise RuntimeError("Stage is not loaded")
 
-                    waiting_for_hidden_states = False
+                    command = pending_hidden_command
+                    pending_hidden_command = None
+                    processing_start = perf_counter_ns()
                     hidden_states = load(msg)["hidden_states"]
-                    token_id = stage_runtime.sample_token(hidden_states)
-                    await ws.send(json.dumps({"type": "token", "token_id": token_id}))
+                    token_id, gpu_ms, sample_ms = stage_runtime.timed_sample_token(
+                        hidden_states
+                    )
+                    processing_ms = (perf_counter_ns() - processing_start) / 1_000_000
+                    response = {
+                        "type": "token",
+                        "request_id": command["request_id"],
+                        "step_id": command["step_id"],
+                        "phase": command["phase"],
+                        "token_id": token_id,
+                        "runtime": runtime_metrics(
+                            stage_runtime,
+                            node_id,
+                            gpu_ms,
+                            processing_ms,
+                            sample_ms,
+                        ),
+                    }
+                    await ws.send(json.dumps(response, separators=(",", ":")))
                     continue
 
                 if msg.startswith("download "):
@@ -35,6 +74,7 @@ async def run(url):
                     await asyncio.to_thread(download_stage, stage)
                     print(f"Loading stage {stage}...")
                     stage_runtime = await asyncio.to_thread(load_stage, stage)
+                    node_id = configured_node_id or f"runtime-{stage}"
                     await ws.send(f"ready {stage}")
                     print(f"Stage {stage} ready. Staying connected.")
                     continue
@@ -43,14 +83,29 @@ async def run(url):
                 if command["type"] == "forward_tokens":
                     if stage_runtime is None:
                         raise RuntimeError("Stage is not loaded")
-                    hidden_states = stage_runtime.forward_tokens(command["input_ids"])
-                    await ws.send(
-                        save({"hidden_states": hidden_states.cpu().contiguous()})
+                    processing_start = perf_counter_ns()
+                    hidden_states, gpu_ms = stage_runtime.timed_forward_tokens(
+                        command["input_ids"]
                     )
+                    payload = save(
+                        {"hidden_states": hidden_states.cpu().contiguous()}
+                    )
+                    processing_ms = (perf_counter_ns() - processing_start) / 1_000_000
+                    response = {
+                        "type": "hidden_states",
+                        "request_id": command["request_id"],
+                        "step_id": command["step_id"],
+                        "phase": command["phase"],
+                        "runtime": runtime_metrics(
+                            stage_runtime, node_id, gpu_ms, processing_ms
+                        ),
+                    }
+                    await ws.send(json.dumps(response, separators=(",", ":")))
+                    await ws.send(payload)
                 elif command["type"] == "forward_hidden":
                     if stage_runtime is None:
                         raise RuntimeError("Stage is not loaded")
-                    waiting_for_hidden_states = True
+                    pending_hidden_command = command
             except Exception as error:
                 await ws.send(json.dumps({"type": "error", "message": str(error)}))
 
@@ -58,5 +113,6 @@ async def run(url):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
+    parser.add_argument("--node-id")
     args = parser.parse_args()
-    asyncio.run(run(args.url))
+    asyncio.run(run(args.url, args.node_id))

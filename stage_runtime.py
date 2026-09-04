@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import perf_counter_ns
 from typing import TypedDict
 
 import torch
@@ -102,6 +103,45 @@ class StageRuntime(nn.Module):
     def sample_token(self, hidden_states):
         logits = self.forward_hidden(hidden_states)[0, -1].float()
         return int(torch.argmax(logits).item())
+
+    @torch.inference_mode()
+    def timed_forward_tokens(self, input_ids, attention_mask=None):
+        return self._measure_gpu(
+            lambda: self.forward_tokens(input_ids, attention_mask=attention_mask)
+        )
+
+    @torch.inference_mode()
+    def timed_sample_token(self, hidden_states):
+        logits, gpu_ms = self._measure_gpu(
+            lambda: self.forward_hidden(hidden_states)
+        )
+        sample_start = perf_counter_ns()
+        token_id = int(torch.argmax(logits[0, -1].float()).item())
+        sample_ms = (perf_counter_ns() - sample_start) / 1_000_000
+        return token_id, gpu_ms, sample_ms
+
+    def gpu_memory(self) -> tuple[int, int]:
+        if self.device.type != "cuda":
+            return 0, 0
+        return (
+            torch.cuda.memory_allocated(self.device),
+            torch.cuda.memory_reserved(self.device),
+        )
+
+    def _measure_gpu(self, operation):
+        if self.device.type != "cuda":
+            start_ns = perf_counter_ns()
+            result = operation()
+            return result, (perf_counter_ns() - start_ns) / 1_000_000
+
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        with torch.cuda.device(self.device):
+            start.record()
+            result = operation()
+            end.record()
+            end.synchronize()
+        return result, start.elapsed_time(end)
 
 
 def load_stage(
