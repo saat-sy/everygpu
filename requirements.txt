@@ -1,7 +1,9 @@
 fastapi
 uvicorn
-websockets>=13
+websockets
 huggingface_hub
-torch>=2.0
-transformers==4.46.3
+torch
+transformers
 safetensors
+pandas
+streamlit
