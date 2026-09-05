@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from opentelemetry.trace import SpanKind
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+import constants
 from download import download_laptop
 from telemetry import (
     RequestTelemetry,
@@ -40,9 +41,6 @@ app.router.redirect_slashes = False
 runtimes: dict[int, WebSocket] = {}
 runtime_inboxes: dict[int, asyncio.Queue[str | bytes]] = {}
 ready_runtimes: set[int] = set()
-REQUIRED_RUNTIMES = 2
-MAX_NEW_TOKENS = 20
-MODEL_NAME = "olmoe-pipeline-fp16"
 download_started = False
 tokenizer: PreTrainedTokenizerBase | None = None
 pipeline_lock = asyncio.Lock()
@@ -54,10 +52,11 @@ async def health():
         "connected_runtimes": len(runtimes),
         "ready_runtimes": len(ready_runtimes),
         "ready_stages": sorted(ready_runtimes),
-        "required_runtimes": REQUIRED_RUNTIMES,
+        "required_runtimes": constants.REQUIRED_RUNTIMES,
         "download_started": download_started,
         "pipeline_ready": (
-            len(ready_runtimes) == REQUIRED_RUNTIMES and tokenizer is not None
+            len(ready_runtimes) == constants.REQUIRED_RUNTIMES
+            and tokenizer is not None
         ),
     }
 
@@ -65,7 +64,7 @@ async def health():
 @app.post("/v1/completions")
 async def completions(request: dict):
     with otel.tracer.start_as_current_span(
-        "pipeline.request",
+        constants.PIPELINE_TRACE_NAME,
         kind=SpanKind.SERVER,
     ):
         return await complete_request(request)
@@ -77,7 +76,7 @@ async def complete_request(request: dict):
     prompt = request.get("prompt")
     if not isinstance(prompt, str) or not prompt:
         raise HTTPException(400, "prompt must be a non-empty string")
-    model = request.get("model", MODEL_NAME)
+    model = request.get("model", constants.MODEL_NAME)
     if not isinstance(model, str) or not model:
         raise HTTPException(400, "model must be a non-empty string")
 
@@ -96,7 +95,7 @@ async def complete_request(request: dict):
         runtime_zero = runtimes.get(0)
         runtime_one = runtimes.get(1)
         if (
-            len(ready_runtimes) != REQUIRED_RUNTIMES
+            len(ready_runtimes) != constants.REQUIRED_RUNTIMES
             or active_tokenizer is None
             or runtime_zero is None
             or runtime_one is None
@@ -109,7 +108,7 @@ async def complete_request(request: dict):
         prompt_tokens = len(input_ids)
         generated_tokens = []
 
-        for step_id in range(MAX_NEW_TOKENS):
+        for step_id in range(constants.MAX_NEW_TOKENS):
             phase = "prefill" if step_id == 0 else "decode"
             command = json.dumps(
                 {
@@ -276,7 +275,10 @@ async def start_downloads():
         return
     download_started = True
 
-    print(f"\n{REQUIRED_RUNTIMES} runtimes connected. Triggering downloads...")
+    print(
+        f"\n{constants.REQUIRED_RUNTIMES} runtimes connected. "
+        "Triggering downloads..."
+    )
     for stage, websocket in list(runtimes.items()):
         await websocket.send_text(f"download {stage}")
         print(f"Assigned stage {stage} to runtime {stage}")
@@ -292,7 +294,7 @@ async def start_downloads():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 
-    available_stages = set(range(REQUIRED_RUNTIMES)) - set(runtimes)
+    available_stages = set(range(constants.REQUIRED_RUNTIMES)) - set(runtimes)
     if not available_stages:
         await websocket.close()
         return
@@ -300,11 +302,11 @@ async def websocket_endpoint(websocket: WebSocket):
     stage = min(available_stages)
     runtimes[stage] = websocket
     runtime_inboxes[stage] = asyncio.Queue()
-    print(f"Runtime connected ({len(runtimes)}/{REQUIRED_RUNTIMES})")
+    print(f"Runtime connected ({len(runtimes)}/{constants.REQUIRED_RUNTIMES})")
 
     if download_started:
         await websocket.send_text(f"download {stage}")
-    elif len(runtimes) == REQUIRED_RUNTIMES:
+    elif len(runtimes) == constants.REQUIRED_RUNTIMES:
         asyncio.create_task(start_downloads())
 
     try:
@@ -317,7 +319,8 @@ async def websocket_endpoint(websocket: WebSocket):
             if text == f"ready {stage}":
                 ready_runtimes.add(stage)
                 print(
-                    f"Runtime {stage} ready ({len(ready_runtimes)}/{REQUIRED_RUNTIMES})"
+                    f"Runtime {stage} ready "
+                    f"({len(ready_runtimes)}/{constants.REQUIRED_RUNTIMES})"
                 )
             elif text is not None:
                 await runtime_inboxes[stage].put(text)
@@ -333,11 +336,15 @@ async def websocket_endpoint(websocket: WebSocket):
             )
         runtimes.pop(stage, None)
         ready_runtimes.discard(stage)
-        print(f"Runtime disconnected ({len(runtimes)}/{REQUIRED_RUNTIMES})")
+        print(
+            "Runtime disconnected "
+            f"({len(runtimes)}/{constants.REQUIRED_RUNTIMES})"
+        )
 
 
 if __name__ == "__main__":
     print(
-        f"Server running on 0.0.0.0:8765. Waiting for {REQUIRED_RUNTIMES} runtimes..."
+        "Server running on 0.0.0.0:8765. Waiting for "
+        f"{constants.REQUIRED_RUNTIMES} runtimes..."
     )
     uvicorn.run(app, host="0.0.0.0", port=8765, ws_max_size=64 * 1024 * 1024)

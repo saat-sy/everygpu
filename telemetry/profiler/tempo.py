@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,12 +13,8 @@ from urllib.request import Request, urlopen
 
 import streamlit as st
 
+import constants
 from telemetry.profiler.trace import build_profile
-
-TEMPO_URL = os.getenv("TEMPO_URL", "http://127.0.0.1:3200").rstrip("/")
-SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "server")
-LOOKBACK_HOURS = int(os.getenv("TEMPO_LOOKBACK_HOURS", "168"))
-TRACE_NAME = "pipeline.request"
 
 
 class TempoError(RuntimeError):
@@ -45,7 +40,7 @@ class TraceSummary:
 
 
 def _tempo_json(path: str, parameters: dict[str, str | int] | None = None) -> Any:
-    url = f"{TEMPO_URL}{path}"
+    url = f"{constants.TEMPO_URL}{path}"
     if parameters:
         url = f"{url}?{urlencode(parameters)}"
     request = Request(url, headers={"Accept": "application/json"})
@@ -56,7 +51,9 @@ def _tempo_json(path: str, parameters: dict[str, str | int] | None = None) -> An
         detail = error.read(500).decode("utf-8", errors="replace")
         raise TempoError(f"Tempo returned HTTP {error.code}: {detail}") from error
     except (URLError, TimeoutError) as error:
-        raise TempoError(f"Cannot reach Tempo at {TEMPO_URL}: {error}") from error
+        raise TempoError(
+            f"Cannot reach Tempo at {constants.TEMPO_URL}: {error}"
+        ) from error
 
 
 @st.cache_data(show_spinner=False, ttl=30)
@@ -66,10 +63,10 @@ def list_profiles() -> list[TraceSummary]:
         "/api/search",
         {
             "q": (
-                f'{{ resource.service.name = "{SERVICE_NAME}" '
-                f'&& name = "{TRACE_NAME}" }}'
+                f'{{ resource.service.name = "{constants.TEMPO_SERVICE_NAME}" '
+                f'&& name = "{constants.PIPELINE_TRACE_NAME}" }}'
             ),
-            "start": now - LOOKBACK_HOURS * 60 * 60,
+            "start": now - constants.TEMPO_LOOKBACK_HOURS * 60 * 60,
             "end": now,
             "limit": 100,
         },
@@ -79,7 +76,10 @@ def list_profiles() -> list[TraceSummary]:
         trace_id = trace.get("traceID")
         if not isinstance(trace_id, str):
             continue
-        if trace.get("rootTraceName") not in (None, TRACE_NAME):
+        if trace.get("rootTraceName") not in (
+            None,
+            constants.PIPELINE_TRACE_NAME,
+        ):
             continue
         try:
             summaries.append(

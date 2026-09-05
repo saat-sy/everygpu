@@ -2,24 +2,21 @@ import sys
 
 from huggingface_hub import hf_hub_download
 
-REPO = "saatwiksy/olmoe-pipeline-fp16"
-
-LAPTOP_FILES = [
-    "manifest.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-]
+import constants
 
 
 def download_files(files):
     for f in files:
         print(f"Downloading {f}...")
-        hf_hub_download(repo_id=REPO, filename=f, local_dir=".")
+        hf_hub_download(
+            repo_id=constants.MODEL_REPOSITORY,
+            filename=f,
+            local_dir=".",
+        )
 
 
 def download_laptop():
-    download_files(LAPTOP_FILES)
+    download_files(constants.LAPTOP_FILES)
 
 
 def download_stage(stage: int):

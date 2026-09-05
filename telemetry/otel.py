@@ -4,11 +4,11 @@ import os
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk import resources
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from . import constants
+import constants
 
 _tracer_provider: TracerProvider | None = None
 
@@ -22,9 +22,9 @@ def configure_telemetry() -> None:
     if _tracer_provider is not None:
         return
 
-    resource = Resource.create(
+    resource = resources.Resource.create(
         {
-            SERVICE_NAME: os.getenv(
+            resources.SERVICE_NAME: os.getenv(
                 "OTEL_SERVICE_NAME",
                 constants.DEFAULT_OTEL_SERVICE_NAME,
             )

@@ -8,7 +8,7 @@ from typing import Literal, Self, TypeGuard
 
 from opentelemetry import trace
 
-from . import constants
+import constants
 
 Phase = Literal["prefill", "decode"]
 
