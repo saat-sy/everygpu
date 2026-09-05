@@ -6,5 +6,5 @@ uvicorn
 websockets
 huggingface_hub
 torch
-transformers
+transformers==4.57.1
 safetensors
