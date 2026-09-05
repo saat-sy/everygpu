@@ -10,22 +10,17 @@ from download import download_stage
 from stage_runtime import StageRuntime, load_stage
 
 
-def runtime_metrics(stage_runtime, node_id, gpu_ms, processing_ms, sample_ms=None):
-    allocated, reserved = stage_runtime.gpu_memory()
+def runtime_metrics(stage_runtime, node_id, gpu_ms, processing_ms):
     first_layer, last_layer = stage_runtime.stage["layers"]
-    metrics = {
+    return {
         "node_id": node_id,
         "stage_id": stage_runtime.stage["id"],
         "device": str(stage_runtime.device),
         "layers": {"start": first_layer, "end": last_layer},
         "gpu_ms": gpu_ms,
         "processing_ms": processing_ms,
-        "gpu_memory_allocated_bytes": allocated,
-        "gpu_memory_reserved_bytes": reserved,
+        "gpu_memory_reserved_bytes": stage_runtime.gpu_memory_reserved_bytes(),
     }
-    if sample_ms is not None:
-        metrics["sample_ms"] = sample_ms
-    return metrics
 
 
 async def run(url, configured_node_id=None):
@@ -47,9 +42,7 @@ async def run(url, configured_node_id=None):
                     pending_hidden_command = None
                     processing_start = perf_counter_ns()
                     hidden_states = load(msg)["hidden_states"]
-                    token_id, gpu_ms, sample_ms = stage_runtime.timed_sample_token(
-                        hidden_states
-                    )
+                    token_id, gpu_ms = stage_runtime.timed_sample_token(hidden_states)
                     processing_ms = (perf_counter_ns() - processing_start) / 1_000_000
                     response = {
                         "type": "token",
@@ -62,7 +55,6 @@ async def run(url, configured_node_id=None):
                             node_id,
                             gpu_ms,
                             processing_ms,
-                            sample_ms,
                         ),
                     }
                     await ws.send(json.dumps(response, separators=(",", ":")))
@@ -87,9 +79,7 @@ async def run(url, configured_node_id=None):
                     hidden_states, gpu_ms = stage_runtime.timed_forward_tokens(
                         command["input_ids"]
                     )
-                    payload = save(
-                        {"hidden_states": hidden_states.cpu().contiguous()}
-                    )
+                    payload = save({"hidden_states": hidden_states.cpu().contiguous()})
                     processing_ms = (perf_counter_ns() - processing_start) / 1_000_000
                     response = {
                         "type": "hidden_states",
@@ -106,7 +96,8 @@ async def run(url, configured_node_id=None):
                     if stage_runtime is None:
                         raise RuntimeError("Stage is not loaded")
                     pending_hidden_command = command
-            except Exception as error:
+            # Report request failures without terminating the long-lived runtime.
+            except Exception as error:  # noqa: BLE001
                 await ws.send(json.dumps({"type": "error", "message": str(error)}))
 
 

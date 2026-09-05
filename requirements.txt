@@ -1,9 +1,10 @@
 fastapi
+opentelemetry-api
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk
 uvicorn
 websockets
 huggingface_hub
 torch
 transformers
 safetensors
-pandas
-streamlit

@@ -47,9 +47,9 @@ class StageRuntime(nn.Module):
                 self.model.layers[layer] = PassthroughDecoder()
 
         if not stage["embeddings"]:
-            setattr(self.model, "embed_tokens", nn.Identity())
+            setattr(self.model, "embed_tokens", nn.Identity())  # noqa: B010
         if not stage["output_head"]:
-            setattr(self.model, "norm", nn.Identity())
+            setattr(self.model, "norm", nn.Identity())  # noqa: B010
 
     def load_weights(self, checkpoint: Path):
         weights = load_file(str(checkpoint), device=str(self.device))
@@ -65,9 +65,7 @@ class StageRuntime(nn.Module):
         if not self.stage["embeddings"]:
             raise ValueError("This stage does not accept token IDs")
 
-        input_ids = torch.as_tensor(
-            input_ids, dtype=torch.long, device=self.device
-        )
+        input_ids = torch.as_tensor(input_ids, dtype=torch.long, device=self.device)
         if input_ids.ndim == 1:
             input_ids = input_ids.unsqueeze(0)
 
@@ -112,21 +110,12 @@ class StageRuntime(nn.Module):
 
     @torch.inference_mode()
     def timed_sample_token(self, hidden_states):
-        logits, gpu_ms = self._measure_gpu(
-            lambda: self.forward_hidden(hidden_states)
-        )
-        sample_start = perf_counter_ns()
-        token_id = int(torch.argmax(logits[0, -1].float()).item())
-        sample_ms = (perf_counter_ns() - sample_start) / 1_000_000
-        return token_id, gpu_ms, sample_ms
+        return self._measure_gpu(lambda: self.sample_token(hidden_states))
 
-    def gpu_memory(self) -> tuple[int, int]:
+    def gpu_memory_reserved_bytes(self) -> int:
         if self.device.type != "cuda":
-            return 0, 0
-        return (
-            torch.cuda.memory_allocated(self.device),
-            torch.cuda.memory_reserved(self.device),
-        )
+            return 0
+        return torch.cuda.memory_reserved(self.device)
 
     def _measure_gpu(self, operation):
         if self.device.type != "cuda":
