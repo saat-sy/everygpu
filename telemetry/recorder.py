@@ -1,4 +1,4 @@
-"""Record request metrics and trace details with OpenTelemetry."""
+"""Record completed request profiles as OpenTelemetry traces."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -8,7 +8,7 @@ from typing import Literal, Self, TypeGuard
 
 from opentelemetry import trace
 
-from . import constants, otel
+from . import constants
 
 Phase = Literal["prefill", "decode"]
 
@@ -129,15 +129,6 @@ class RequestTelemetry:
             constants.LAYER_END_ATTRIBUTE: measurement.layer_end,
         }
         phased_attributes = {**attributes, constants.PHASE_ATTRIBUTE: phase}
-        otel.stage_gpu_duration.record(measurement.gpu_ms, phased_attributes)
-        otel.stage_processing_duration.record(
-            measurement.processing_ms,
-            phased_attributes,
-        )
-        otel.stage_gpu_memory_reserved.set(
-            measurement.gpu_memory_reserved_bytes,
-            attributes,
-        )
         trace.get_current_span().add_event(
             "stage_runtime",
             {
@@ -202,36 +193,6 @@ class RequestTelemetry:
             - self._runtime_exchange_ms,
             0.0,
         )
-        model = {constants.MODEL_ATTRIBUTE: self.model}
-
-        otel.request_duration.record(request_e2e_ms, model)
-        otel.request_throughput.record(throughput, model)
-        for token_type, value in (
-            ("prompt", prompt_tokens),
-            ("output", output_tokens),
-            ("total", prompt_tokens + output_tokens),
-        ):
-            otel.request_tokens.record(
-                value,
-                {**model, constants.TOKEN_TYPE_ATTRIBUTE: token_type},
-            )
-        for timing, value in (("ttft", ttft_ms), ("ttlt", ttlt_ms), ("tpot", tpot_ms)):
-            if value is not None:
-                otel.request_token_latency.record(
-                    value,
-                    {**model, constants.TIMING_ATTRIBUTE: timing},
-                )
-        for phase, value in (
-            ("queue", queue_wait_ms),
-            ("orchestration", orchestration_ms),
-            ("tokenize", tokenize_ms),
-            ("detokenize", detokenize_ms),
-        ):
-            otel.server_duration.record(
-                value,
-                {**model, constants.SERVER_PHASE_ATTRIBUTE: phase},
-            )
-
         span_attributes: dict[str, int | float] = {
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
@@ -273,13 +234,11 @@ class RequestTelemetry:
             constants.TARGET_NODE_ID_ATTRIBUTE: target_node_id,
             constants.MESSAGE_TYPE_ATTRIBUTE: message_type,
         }
-        otel.edge_payload_size.record(payload_bytes, attributes)
         event: dict[str, str | int | float] = {
             **attributes,
             "bytes": payload_bytes,
         }
         if latency_ms is not None:
-            otel.edge_duration.record(latency_ms, attributes)
             event["latency_ms"] = latency_ms
         trace.get_current_span().add_event("pipeline_edge", event)
 

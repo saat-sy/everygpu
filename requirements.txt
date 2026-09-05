@@ -2,6 +2,7 @@ fastapi
 opentelemetry-api
 opentelemetry-exporter-otlp-proto-http
 opentelemetry-sdk
+streamlit
 uvicorn
 websockets
 huggingface_hub
