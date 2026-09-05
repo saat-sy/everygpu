@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import traceback
 from time import perf_counter_ns
 
 from safetensors.torch import load, save
@@ -98,6 +99,7 @@ async def run(url, configured_node_id=None):
                     pending_hidden_command = command
             # Report request failures without terminating the long-lived runtime.
             except Exception as error:  # noqa: BLE001
+                traceback.print_exc()
                 await ws.send(json.dumps({"type": "error", "message": str(error)}))
 
 
