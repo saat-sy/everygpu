@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llm-load-lab"
+name = "everygpu"
 version = "0.1.0"
 description = "A distributed LLM pipeline and telemetry profiler."
 readme = "README.md"
@@ -23,9 +23,9 @@ dependencies = [
 ]
 
 [project.scripts]
-llm-lab-download = "download:main"
-llm-lab-server = "coordinator.app:main"
-llm-lab-worker = "worker.client:main"
+everygpu-download = "download:main"
+everygpu-server = "coordinator.app:main"
+everygpu-worker = "worker.client:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
