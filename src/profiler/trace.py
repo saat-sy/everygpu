@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import constants
+import config
 
 
 class InvalidProfileError(RuntimeError):
@@ -63,14 +63,14 @@ def build_profile(trace: dict[str, Any], trace_id: str) -> dict[str, Any]:
         (
             candidate
             for candidate in _spans(trace)
-            if candidate.get("name") == constants.PIPELINE_TRACE_NAME
+            if candidate.get("name") == config.PIPELINE_TRACE_NAME
         ),
         None,
     )
     if span is None:
         raise InvalidProfileError(
             f"Trace {trace_id} does not contain a "
-            f"{constants.PIPELINE_TRACE_NAME} span"
+            f"{config.PIPELINE_TRACE_NAME} span"
         )
 
     attributes = _attributes(span.get("attributes"))
@@ -215,8 +215,14 @@ def _duration_rows(
     attributes: dict[str, Any], stages: list[dict], edges: list[dict]
 ) -> list[dict]:
     rows = [
-        {"component": "Queue wait", "duration_ms": number(attributes.get("queue_wait_ms"))},
-        {"component": "Tokenization", "duration_ms": number(attributes.get("tokenize_ms"))},
+        {
+            "component": "Queue wait",
+            "duration_ms": number(attributes.get("queue_wait_ms")),
+        },
+        {
+            "component": "Tokenization",
+            "duration_ms": number(attributes.get("tokenize_ms")),
+        },
     ]
     edge_by_pair = {(edge["source"], edge["target"]): edge for edge in edges}
     for stage in stages:

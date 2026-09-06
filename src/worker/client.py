@@ -8,7 +8,7 @@ from safetensors.torch import load, save
 from websockets.asyncio.client import connect
 
 from download import download_stage
-from stage_runtime import StageRuntime, load_stage
+from worker.stage import StageRuntime, load_stage
 
 
 def runtime_metrics(stage_runtime, node_id, gpu_ms, processing_ms):
@@ -103,9 +103,13 @@ async def run(url, configured_node_id=None):
                 await ws.send(json.dumps({"type": "error", "message": str(error)}))
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
     parser.add_argument("--node-id")
     args = parser.parse_args()
     asyncio.run(run(args.url, args.node_id))
+
+
+if __name__ == "__main__":
+    main()

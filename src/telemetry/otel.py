@@ -1,14 +1,12 @@
 """OpenTelemetry tracing setup for pipeline profiles."""
 
-import os
-
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk import resources
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-import constants
+import config
 
 _tracer_provider: TracerProvider | None = None
 
@@ -24,10 +22,7 @@ def configure_telemetry() -> None:
 
     resource = resources.Resource.create(
         {
-            resources.SERVICE_NAME: os.getenv(
-                "OTEL_SERVICE_NAME",
-                constants.DEFAULT_OTEL_SERVICE_NAME,
-            )
+            resources.SERVICE_NAME: config.TEMPO_SERVICE_NAME,
         }
     )
 

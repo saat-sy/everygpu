@@ -2,9 +2,9 @@
 
 import streamlit as st
 
-from telemetry.profiler.tempo import TempoError, list_profiles, load_profile
-from telemetry.profiler.trace import InvalidProfileError
-from telemetry.profiler.view import render_profile
+from profiler.tempo import TempoError, list_profiles, load_profile
+from profiler.trace import InvalidProfileError
+from profiler.view import render_profile
 
 
 def main() -> None:

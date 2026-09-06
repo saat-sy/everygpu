@@ -8,13 +8,11 @@ from typing import Literal, Self, TypeGuard
 
 from opentelemetry import trace
 
-import constants
-
 Phase = Literal["prefill", "decode"]
 
 
 def elapsed_ms(start_ns: int) -> float:
-    return (perf_counter_ns() - start_ns) / constants.NANOSECONDS_PER_MILLISECOND
+    return (perf_counter_ns() - start_ns) / 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,8 +95,8 @@ class RequestTelemetry:
         )
         request = cls(model=model, request_started_ns=request_started_ns)
         request._record_edge(
-            constants.CLIENT_ENDPOINT_ID,
-            constants.SERVER_ENDPOINT_ID,
+            "client",
+            "server",
             "http_request",
             request_bytes,
         )
@@ -121,14 +119,14 @@ class RequestTelemetry:
     ) -> None:
         self._runtime_exchange_ms += exchange_ms
         attributes = {
-            constants.MODEL_ATTRIBUTE: self.model,
-            constants.NODE_ID_ATTRIBUTE: measurement.node_id,
-            constants.STAGE_ID_ATTRIBUTE: measurement.stage_id,
-            constants.DEVICE_ATTRIBUTE: measurement.device,
-            constants.LAYER_START_ATTRIBUTE: measurement.layer_start,
-            constants.LAYER_END_ATTRIBUTE: measurement.layer_end,
+            "model": self.model,
+            "node_id": measurement.node_id,
+            "stage_id": measurement.stage_id,
+            "device": measurement.device,
+            "layer_start": measurement.layer_start,
+            "layer_end": measurement.layer_end,
         }
-        phased_attributes = {**attributes, constants.PHASE_ATTRIBUTE: phase}
+        phased_attributes = {**attributes, "phase": phase}
         trace.get_current_span().add_event(
             "stage_runtime",
             {
@@ -139,7 +137,7 @@ class RequestTelemetry:
             },
         )
         self._record_edge(
-            constants.SERVER_ENDPOINT_ID,
+            "server",
             measurement.node_id,
             request_message_type,
             request_bytes,
@@ -147,7 +145,7 @@ class RequestTelemetry:
         )
         self._record_edge(
             measurement.node_id,
-            constants.SERVER_ENDPOINT_ID,
+            "server",
             response_message_type,
             response_bytes,
             max(exchange_ms - request_latency_ms - measurement.processing_ms, 0.0),
@@ -173,7 +171,7 @@ class RequestTelemetry:
         ttlt_ms = self._since_start_ms(last_token_ns)
         tpot_ms = (
             (last_token_ns - first_token_ns)
-            / constants.NANOSECONDS_PER_MILLISECOND
+            / 1_000_000
             / (output_tokens - 1)
             if first_token_ns is not None
             and last_token_ns is not None
@@ -181,7 +179,7 @@ class RequestTelemetry:
             else None
         )
         throughput = (
-            output_tokens / (request_e2e_ms / constants.MILLISECONDS_PER_SECOND)
+            output_tokens / (request_e2e_ms / 1_000)
             if request_e2e_ms > 0
             else 0.0
         )
@@ -218,7 +216,7 @@ class RequestTelemetry:
             return None
         return (
             timestamp_ns - self.request_started_ns
-        ) / constants.NANOSECONDS_PER_MILLISECOND
+        ) / 1_000_000
 
     def _record_edge(
         self,
@@ -229,10 +227,10 @@ class RequestTelemetry:
         latency_ms: float | None = None,
     ) -> None:
         attributes = {
-            constants.MODEL_ATTRIBUTE: self.model,
-            constants.SOURCE_NODE_ID_ATTRIBUTE: source_node_id,
-            constants.TARGET_NODE_ID_ATTRIBUTE: target_node_id,
-            constants.MESSAGE_TYPE_ATTRIBUTE: message_type,
+            "model": self.model,
+            "source_node_id": source_node_id,
+            "target_node_id": target_node_id,
+            "message_type": message_type,
         }
         event: dict[str, str | int | float] = {
             **attributes,

@@ -22,16 +22,15 @@ dependencies = [
     "websockets",
 ]
 
+[project.scripts]
+llm-lab-download = "download:main"
+llm-lab-server = "coordinator.app:main"
+llm-lab-worker = "worker.client:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = [
-    "constants",
-    "download",
-    "laptop_server",
-    "runtime_client",
-    "stage_runtime",
-]
+py-modules = ["config", "download"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["telemetry*"]
+include = ["coordinator*", "profiler*", "telemetry*", "worker*"]

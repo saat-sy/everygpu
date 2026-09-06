@@ -13,8 +13,8 @@ from urllib.request import Request, urlopen
 
 import streamlit as st
 
-import constants
-from telemetry.profiler.trace import build_profile
+import config
+from profiler.trace import build_profile
 
 
 class TempoError(RuntimeError):
@@ -40,7 +40,7 @@ class TraceSummary:
 
 
 def _tempo_json(path: str, parameters: dict[str, str | int] | None = None) -> Any:
-    url = f"{constants.TEMPO_URL}{path}"
+    url = f"{config.TEMPO_URL}{path}"
     if parameters:
         url = f"{url}?{urlencode(parameters)}"
     request = Request(url, headers={"Accept": "application/json"})
@@ -52,7 +52,7 @@ def _tempo_json(path: str, parameters: dict[str, str | int] | None = None) -> An
         raise TempoError(f"Tempo returned HTTP {error.code}: {detail}") from error
     except (URLError, TimeoutError) as error:
         raise TempoError(
-            f"Cannot reach Tempo at {constants.TEMPO_URL}: {error}"
+            f"Cannot reach Tempo at {config.TEMPO_URL}: {error}"
         ) from error
 
 
@@ -63,10 +63,10 @@ def list_profiles() -> list[TraceSummary]:
         "/api/search",
         {
             "q": (
-                f'{{ resource.service.name = "{constants.TEMPO_SERVICE_NAME}" '
-                f'&& name = "{constants.PIPELINE_TRACE_NAME}" }}'
+                f'{{ resource.service.name = "{config.TEMPO_SERVICE_NAME}" '
+                f'&& name = "{config.PIPELINE_TRACE_NAME}" }}'
             ),
-            "start": now - constants.TEMPO_LOOKBACK_HOURS * 60 * 60,
+            "start": now - config.TEMPO_LOOKBACK_HOURS * 60 * 60,
             "end": now,
             "limit": 100,
         },
@@ -78,7 +78,7 @@ def list_profiles() -> list[TraceSummary]:
             continue
         if trace.get("rootTraceName") not in (
             None,
-            constants.PIPELINE_TRACE_NAME,
+            config.PIPELINE_TRACE_NAME,
         ):
             continue
         try:

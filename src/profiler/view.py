@@ -7,7 +7,7 @@ from typing import Any
 
 import streamlit as st
 
-from telemetry.profiler.trace import number
+from profiler.trace import number
 
 
 def _format_ms(value: Any) -> str:
@@ -36,7 +36,10 @@ def pipeline_graph(profile: dict[str, Any]) -> str:
     lines = [
         "digraph pipeline {",
         '  graph [rankdir="LR", bgcolor="transparent", pad="0.2", nodesep="0.7"];',
-        '  node [shape="box", style="rounded,filled", fontname="sans-serif", color="#64748b", fontcolor="#e2e8f0"];',
+        (
+            '  node [shape="box", style="rounded,filled", fontname="sans-serif", '
+            'color="#64748b", fontcolor="#e2e8f0"];'
+        ),
         '  edge [fontname="sans-serif", color="#94a3b8", fontcolor="#cbd5e1"];',
         '  client [label="Client", fillcolor="#332c40"];',
         (
