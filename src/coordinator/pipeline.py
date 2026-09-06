@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 import config
 from coordinator.runtimes import RuntimePool
-from download import download_coordinator
+from model.download import download_coordinator
 from telemetry.recorder import RequestTelemetry, RuntimeMeasurement, elapsed_ms
 
 

@@ -7,7 +7,7 @@ from time import perf_counter_ns
 from safetensors.torch import load, save
 from websockets.asyncio.client import connect
 
-from download import download_stage
+from model.download import download_stage
 from worker.stage import StageRuntime, load_stage
 
 

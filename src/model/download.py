@@ -1,3 +1,5 @@
+"""Download model artifacts from the configured Hugging Face repository."""
+
 import sys
 
 from huggingface_hub import hf_hub_download

@@ -23,14 +23,14 @@ dependencies = [
 ]
 
 [project.scripts]
-everygpu-download = "download:main"
+everygpu-download = "model.download:main"
 everygpu-server = "coordinator.app:main"
 everygpu-worker = "worker.client:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = ["config", "download"]
+py-modules = ["config"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["coordinator*", "profiler*", "telemetry*", "worker*"]
+include = ["coordinator*", "model*", "profiler*", "telemetry*", "worker*"]
