@@ -156,6 +156,8 @@ class Pipeline:
 
                 raw_response = await self.runtimes.receive(1)
                 stage_one_exchange_ms = elapsed_ms(exchange_started_ns)
+                if not isinstance(raw_response, str):
+                    raise HTTPException(500, "runtime 1 returned an invalid response")
                 response_data = parse_runtime_response(
                     raw_response,
                     expected_type="token",
@@ -189,6 +191,8 @@ class Pipeline:
 
             detokenize_started_ns = perf_counter_ns()
             text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            if not isinstance(text, str):
+                raise HTTPException(500, "tokenizer returned invalid decoded text")
             detokenize_ms = elapsed_ms(detokenize_started_ns)
             request_e2e_ms = elapsed_ms(request_started_ns)
             request_telemetry.finish(
