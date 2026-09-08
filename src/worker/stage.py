@@ -123,14 +123,15 @@ class StageRuntime(nn.Module):
             result = operation()
             return result, (perf_counter_ns() - start_ns) / 1_000_000
 
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
         with torch.cuda.device(self.device):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
             start.record()
             result = operation()
             end.record()
             end.synchronize()
-        return result, start.elapsed_time(end)
+            elapsed_ms = start.elapsed_time(end)
+        return result, elapsed_ms
 
 
 def load_stage(
