@@ -1,7 +1,7 @@
 """FastAPI entry point for the pipeline coordinator."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -18,7 +18,7 @@ pipeline = Pipeline(runtimes)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
     otel.configure_telemetry()
     try:
         yield
