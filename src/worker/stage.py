@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import perf_counter_ns
 from typing import TypedDict
 
 import torch
@@ -46,9 +47,9 @@ class StageRuntime(nn.Module):
                 self.model.layers[layer] = PassthroughDecoder()
 
         if not stage["embeddings"]:
-            setattr(self.model, "embed_tokens", nn.Identity())
+            setattr(self.model, "embed_tokens", nn.Identity())  # noqa: B010
         if not stage["output_head"]:
-            setattr(self.model, "norm", nn.Identity())
+            setattr(self.model, "norm", nn.Identity())  # noqa: B010
 
     def load_weights(self, checkpoint: Path):
         weights = load_file(str(checkpoint), device=str(self.device))
@@ -64,9 +65,7 @@ class StageRuntime(nn.Module):
         if not self.stage["embeddings"]:
             raise ValueError("This stage does not accept token IDs")
 
-        input_ids = torch.as_tensor(
-            input_ids, dtype=torch.long, device=self.device
-        )
+        input_ids = torch.as_tensor(input_ids, dtype=torch.long, device=self.device)
         if input_ids.ndim == 1:
             input_ids = input_ids.unsqueeze(0)
 
@@ -102,6 +101,37 @@ class StageRuntime(nn.Module):
     def sample_token(self, hidden_states):
         logits = self.forward_hidden(hidden_states)[0, -1].float()
         return int(torch.argmax(logits).item())
+
+    @torch.inference_mode()
+    def timed_forward_tokens(self, input_ids, attention_mask=None):
+        return self._measure_gpu(
+            lambda: self.forward_tokens(input_ids, attention_mask=attention_mask)
+        )
+
+    @torch.inference_mode()
+    def timed_sample_token(self, hidden_states):
+        return self._measure_gpu(lambda: self.sample_token(hidden_states))
+
+    def gpu_memory_reserved_bytes(self) -> int:
+        if self.device.type != "cuda":
+            return 0
+        return torch.cuda.memory_reserved(self.device)
+
+    def _measure_gpu(self, operation):
+        if self.device.type != "cuda":
+            start_ns = perf_counter_ns()
+            result = operation()
+            return result, (perf_counter_ns() - start_ns) / 1_000_000
+
+        with torch.cuda.device(self.device):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            result = operation()
+            end.record()
+            end.synchronize()
+            elapsed_ms = start.elapsed_time(end)
+        return result, elapsed_ms
 
 
 def load_stage(

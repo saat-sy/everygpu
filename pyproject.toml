@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "everygpu"
+version = "0.1.0"
+description = "A distributed LLM pipeline and telemetry profiler."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "huggingface-hub",
+    "opentelemetry-api",
+    "opentelemetry-exporter-otlp-proto-http",
+    "opentelemetry-sdk",
+    "safetensors",
+    "streamlit",
+    "torch",
+    "transformers==4.57.1",
+    "uvicorn",
+    "websockets",
+]
+
+[project.scripts]
+everygpu-download = "model.download:main"
+everygpu-server = "coordinator.app:main"
+everygpu-worker = "worker.client:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["config"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["coordinator*", "model*", "profiler*", "telemetry*", "worker*"]
