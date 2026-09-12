@@ -46,12 +46,9 @@ class Pipeline:
             return
         self.download_started = True
 
-        print(f"\n{self.runtimes.required} runtimes connected. Triggering downloads...")
-        for stage, websocket in self.runtimes.connections():
-            await websocket.send_text(f"download {stage}")
-            print(f"Assigned stage {stage} to runtime {stage}")
-
-        artifact_directory: TemporaryDirectory[str] | None = None
+        print("Downloading coordinator files...")
+        artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
+        self._artifact_directory = artifact_directory
         try:
             artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
             self._artifact_directory = artifact_directory

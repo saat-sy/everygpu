@@ -20,13 +20,17 @@ pipeline = Pipeline(runtimes)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
     otel.configure_telemetry()
+    prepare_task = asyncio.create_task(pipeline.prepare())
     try:
         yield
     finally:
         try:
-            await pipeline.shutdown()
+            await prepare_task
         finally:
-            otel.shutdown_telemetry()
+            try:
+                await pipeline.shutdown()
+            finally:
+                otel.shutdown_telemetry()
 
 
 app = FastAPI(
@@ -61,10 +65,8 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     try:
-        if pipeline.download_started:
-            await websocket.send_text(f"download {stage}")
-        elif runtimes.connected == runtimes.required:
-            asyncio.create_task(pipeline.prepare())
+        await websocket.send_text(f"download {stage}")
+        print(f"Assigned stage {stage} to runtime {stage}")
         await runtimes.listen(stage)
     finally:
         await runtimes.disconnect(stage)
