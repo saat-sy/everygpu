@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from tempfile import TemporaryDirectory
 from time import perf_counter_ns
 from typing import NoReturn
 from uuid import uuid4
@@ -20,6 +21,7 @@ class Pipeline:
         self.runtimes = runtimes
         self.download_started = False
         self.tokenizer: PreTrainedTokenizerBase | None = None
+        self._artifact_directory: TemporaryDirectory[str] | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -49,11 +51,32 @@ class Pipeline:
             await websocket.send_text(f"download {stage}")
             print(f"Assigned stage {stage} to runtime {stage}")
 
-        await asyncio.to_thread(download_coordinator)
-        self.tokenizer = await asyncio.to_thread(
-            AutoTokenizer.from_pretrained, ".", local_files_only=True
-        )
+        artifact_directory: TemporaryDirectory[str] | None = None
+        try:
+            artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
+            self._artifact_directory = artifact_directory
+            await asyncio.to_thread(download_coordinator, artifact_directory.name)
+            self.tokenizer = await asyncio.to_thread(
+                AutoTokenizer.from_pretrained,
+                artifact_directory.name,
+                local_files_only=True,
+            )
+        except BaseException:
+            if artifact_directory is not None:
+                artifact_directory.cleanup()
+            self._artifact_directory = None
+            self.download_started = False
+            raise
         print("Coordinator tokenizer ready")
+
+    async def shutdown(self) -> None:
+        """Release the tokenizer and remove its downloaded artifacts."""
+        self.tokenizer = None
+        artifact_directory = self._artifact_directory
+        self._artifact_directory = None
+        self.download_started = False
+        if artifact_directory is not None:
+            artifact_directory.cleanup()
 
     async def complete(self, request: dict) -> dict[str, str]:
         request_started_ns = perf_counter_ns()
