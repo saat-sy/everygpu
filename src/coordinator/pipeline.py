@@ -51,9 +51,10 @@ class Pipeline:
             await websocket.send_text(f"download {stage}")
             print(f"Assigned stage {stage} to runtime {stage}")
 
-        artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
-        self._artifact_directory = artifact_directory
+        artifact_directory: TemporaryDirectory[str] | None = None
         try:
+            artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
+            self._artifact_directory = artifact_directory
             await asyncio.to_thread(download_coordinator, artifact_directory.name)
             self.tokenizer = await asyncio.to_thread(
                 AutoTokenizer.from_pretrained,
@@ -61,7 +62,8 @@ class Pipeline:
                 local_files_only=True,
             )
         except BaseException:
-            artifact_directory.cleanup()
+            if artifact_directory is not None:
+                artifact_directory.cleanup()
             self._artifact_directory = None
             self.download_started = False
             raise
