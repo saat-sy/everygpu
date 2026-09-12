@@ -23,7 +23,10 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        otel.shutdown_telemetry()
+        try:
+            await pipeline.shutdown()
+        finally:
+            otel.shutdown_telemetry()
 
 
 app = FastAPI(
