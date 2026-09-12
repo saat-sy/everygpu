@@ -50,6 +50,8 @@ class Pipeline:
         artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
         self._artifact_directory = artifact_directory
         try:
+            artifact_directory = TemporaryDirectory(prefix="everygpu-coordinator-")
+            self._artifact_directory = artifact_directory
             await asyncio.to_thread(download_coordinator, artifact_directory.name)
             self.tokenizer = await asyncio.to_thread(
                 AutoTokenizer.from_pretrained,
@@ -57,7 +59,8 @@ class Pipeline:
                 local_files_only=True,
             )
         except BaseException:
-            artifact_directory.cleanup()
+            if artifact_directory is not None:
+                artifact_directory.cleanup()
             self._artifact_directory = None
             self.download_started = False
             raise
