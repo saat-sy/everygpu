@@ -53,7 +53,8 @@ These diagnostic traces, not standardized benchmarks, show measured transport ri
 
 - The execution graph is a fixed, sequential two-stage pipeline; connection order determines placement.
 - A coordinator-wide lock permits one active completion at a time. There is no batching or concurrent scheduling.
-- Generation is greedy and capped at 20 new tokens.
+- Generation is greedy and defaults to 20 new tokens; clients can set a positive
+  `max_tokens` value per request.
 - There is no KV cache. Every decode step recomputes the complete sequence.
 - Hidden states travel through coordinator memory; there is no worker-to-worker transport, activation compression or overlap of communication and compute.
 - There is no capability discovery, dynamic placement, replication, migration or failover.
