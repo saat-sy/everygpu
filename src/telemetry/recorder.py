@@ -155,6 +155,8 @@ class RequestTelemetry:
         self,
         *,
         prompt_tokens: int,
+        requested_output_tokens: int,
+        finish_reason: str,
         request_e2e_ms: float,
         queue_wait_ms: float,
         tokenize_ms: float,
@@ -191,9 +193,11 @@ class RequestTelemetry:
             - self._runtime_exchange_ms,
             0.0,
         )
-        span_attributes: dict[str, int | float] = {
+        span_attributes: dict[str, int | float | str] = {
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
+            "requested_output_tokens": requested_output_tokens,
+            "finish_reason": finish_reason,
             "total_tokens": prompt_tokens + output_tokens,
             "request_e2e_ms": request_e2e_ms,
             "output_tokens_per_second": throughput,

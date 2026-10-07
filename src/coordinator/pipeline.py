@@ -84,6 +84,13 @@ class Pipeline:
         model = request.get("model", config.MODEL_NAME)
         if not isinstance(model, str) or not model:
             raise HTTPException(400, "model must be a non-empty string")
+        max_tokens = request.get("max_tokens", config.MAX_NEW_TOKENS)
+        if (
+            not isinstance(max_tokens, int)
+            or isinstance(max_tokens, bool)
+            or max_tokens <= 0
+        ):
+            raise HTTPException(400, "max_tokens must be a positive integer")
 
         request_bytes = len(json.dumps(request, separators=(",", ":")).encode())
         request_telemetry = RequestTelemetry.start(
@@ -112,8 +119,9 @@ class Pipeline:
             tokenize_ms = elapsed_ms(tokenize_started_ns)
             prompt_tokens = len(input_ids)
             generated_tokens = []
+            finish_reason = "length"
 
-            for step_id in range(config.MAX_NEW_TOKENS):
+            for step_id in range(max_tokens):
                 phase = "prefill" if step_id == 0 else "decode"
                 command = json.dumps(
                     {
@@ -207,6 +215,7 @@ class Pipeline:
                 request_telemetry.record_token_ready()
 
                 if token_id == tokenizer.eos_token_id:
+                    finish_reason = "stop"
                     break
 
             detokenize_started_ns = perf_counter_ns()
@@ -217,6 +226,8 @@ class Pipeline:
             request_e2e_ms = elapsed_ms(request_started_ns)
             request_telemetry.finish(
                 prompt_tokens=prompt_tokens,
+                requested_output_tokens=max_tokens,
+                finish_reason=finish_reason,
                 request_e2e_ms=request_e2e_ms,
                 queue_wait_ms=queue_wait_ms,
                 tokenize_ms=tokenize_ms,
