@@ -1,136 +1,162 @@
-"""Command-line entrypoint: inspect, partition, verify, upload, verify-upload."""
+"""Command-line entrypoint: partition, verify and upload."""
+
 import argparse
 import json
 import sys
 from pathlib import Path
 
-from model_partitioner import adapters, constants, hub, partitioner, source, verifier
-
-
-EXIT_FAILED = 1
-EXIT_INCOMPLETE = 2
+from model_partitioner.utils import constants, models, tensor_utils
+from model_partitioner.artifact import hub, loader
+from model_partitioner.partition import adapters, partitioner, source
+from model_partitioner.verification import verifier
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='model-partitioner')
-    sub = parser.add_subparsers(dest='command', required=True)
+    parser = argparse.ArgumentParser(prog="model-partitioner")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    inspect = sub.add_parser('inspect', help='plan from headers only; no weights are read')
-    inspect.add_argument('--family', required=True, choices=sorted(adapters.ADAPTERS))
-    inspect.add_argument('--source', type=Path, help='local checkpoint directory')
-    inspect.add_argument('--repo-id')
-    inspect.add_argument('--revision')
-    inspect.add_argument('--experts-per-file', type=int, default=constants.DEFAULT_EXPERTS_PER_FILE)
+    supported = ", ".join(a.repo_id for a in adapters.ADAPTERS.values())
+    part = sub.add_parser(
+        "partition",
+        help="download a model and write Safetensors units and manifest",
+        description="Pins the current commit, downloads it to the Hugging Face cache and writes partitions.",
+    )
+    part.add_argument(
+        "--model", required=True, help=f"Hugging Face repo ID: {supported}"
+    )
+    part.add_argument(
+        "--output",
+        type=Path,
+        help="empty or new directory (default: ./partitions/<model name>)",
+    )
 
-    part = sub.add_parser('partition', help='write Safetensors units and manifest')
-    part.add_argument('--family', required=True, choices=sorted(adapters.ADAPTERS))
-    part.add_argument('--source', type=Path, required=True)
-    part.add_argument('--repo-id', required=True)
-    part.add_argument('--revision', required=True)
-    part.add_argument('--out', type=Path, required=True)
-    part.add_argument('--experts-per-file', type=int, default=constants.DEFAULT_EXPERTS_PER_FILE)
-    part.add_argument('--check-hub-hashes', action='store_true',
-                      help='compare source shard sha256 with Hub LFS hashes')
+    check = sub.add_parser(
+        "verify",
+        help="check partitions against the original checkpoint",
+        description="Checksums, coverage and exact reconstruction against the pinned original; no GPU by default.",
+    )
+    check.add_argument("partitions", type=Path, help="directory written by partition")
+    mode = check.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--cpu", action="store_true", help="also compare model outputs on the CPU"
+    )
+    mode.add_argument(
+        "--gpu",
+        action="store_true",
+        help="also compare model outputs on the GPU(s), placed automatically",
+    )
 
-    check = sub.add_parser('verify', help='check an artifact against its source')
-    check.add_argument('--artifact', type=Path, required=True)
-    check.add_argument('--source', type=Path, required=True)
-    check.add_argument('--outputs', type=Path, metavar='WORKDIR',
-                       help='also compare model outputs, using WORKDIR for scratch files')
-    check.add_argument('--device', default='cpu', help='device for --outputs, e.g. cuda:0')
-    check.add_argument('--device-map', help='e.g. auto, to shard the model across devices')
-    check.add_argument('--max-memory', help='per-device limits, e.g. 0=70GiB,1=70GiB,cpu=200GiB')
-
-    upload = sub.add_parser('upload', help='upload an artifact to an explicit repo')
-    upload.add_argument('--artifact', type=Path, required=True)
-    upload.add_argument('--dest-repo', required=True)
-    upload.add_argument('--public', action='store_true')
-
-    verify_up = sub.add_parser('verify-upload', help='check an uploaded revision against the manifest')
-    verify_up.add_argument('--artifact', type=Path, required=True)
-    verify_up.add_argument('--dest-repo', required=True)
-    verify_up.add_argument('--revision', required=True)
-    verify_up.add_argument('--load-unit', help='also download and load this unit, e.g. expert:0:3')
-    verify_up.add_argument('--load-dir', type=Path, help='download directory for --load-unit')
-
+    upload = sub.add_parser(
+        "upload",
+        help="publish partitions to a Hugging Face model repo",
+        description="Uploads the manifest-declared files, creating a private repo if missing, then verifies them.",
+    )
+    upload.add_argument("partitions", type=Path, help="directory written by partition")
+    upload.add_argument(
+        "--repo", required=True, help="destination, e.g. you/olmoe-partitions"
+    )
     return parser
 
 
-def _parse_max_memory(text: str | None) -> dict | None:
-    if not text:
-        return None
-    pairs = (item.split('=') for item in text.split(','))
-    return {(int(key) if key.isdigit() else key): value for key, value in pairs}
-
-
-def _inspect(args) -> int:
-    adapter = adapters.get_adapter(args.family)
-    if args.source:
-        with source.LocalSource(args.source) as src:
-            specs, config = src.specs(), src.config()
-    else:
-        specs = hub.remote_specs(args.repo_id, args.revision)
-        config = hub.remote_config(args.repo_id, args.revision)
-    units = partitioner.plan(specs, adapter, config, args.experts_per_file)
-    files = {unit.file for unit in units}
-    print(json.dumps({'tensors': len(specs), 'files': len(files),
-                      'roles': partitioner.summarize(units)}, indent=1))
-    return 0
-
-
 def _partition(args) -> int:
-    expected = hub.lfs_hashes(args.repo_id, args.revision) if args.check_hub_hashes else None
-    with source.LocalSource(args.source) as src:
+    adapter = adapters.adapter_for_repo(args.model)
+    output = args.output or Path("partitions") / args.model.split("/")[1]
+    tensor_utils.require_empty_dir(output)
+    revision = hub.resolve_revision(args.model)
+    config_path = hub.fetch_config(args.model, revision)
+    adapter.check_config(json.loads(config_path.read_text()))
+    partitioner.check_destination(config_path.parent, output)
+    print(f"{args.model} @ {revision}")
+    files = hub.remote_files(args.model, revision)
+    _check_space(files, output)
+    with source.LocalSource(hub.fetch_source(args.model, revision)) as src:
+        print(partitioner.format_summary(partitioner.plan_source(src, adapter)))
         manifest = partitioner.partition(
-            src, adapters.get_adapter(args.family), args.out, args.repo_id, args.revision,
-            args.experts_per_file, expected)
+            src,
+            adapter,
+            output,
+            args.model,
+            revision,
+            {name: info.sha256 for name, info in files.items()},
+        )
     size = sum(info.size for info in manifest.files.values())
-    print(f'{len(manifest.units)} units, {len(manifest.files)} files, {size} bytes')
-    return 0
+    print(f"wrote {len(manifest.files)} files, {size:,} bytes to {output}")
+    return constants.EXIT_OK
+
+
+def _check_space(files: dict[str, models.FileInfo], output: Path) -> None:
+    """Report the download and output sizes; refuse if the output cannot fit."""
+    weights = sum(i.size for n, i in files.items() if n.endswith(".safetensors"))
+    free = tensor_utils.free_bytes(output)
+    print(
+        f"download: {weights:,} bytes into the Hugging Face cache (skipped if cached)\n"
+        f"output:   about {weights:,} bytes in {output} ({free:,} free there)"
+    )
+    if free < weights:
+        raise ValueError(
+            f"{output} needs about {weights:,} bytes but has {free:,} free"
+        )
 
 
 def _verify(args) -> int:
-    results = verifier.verify_structure(args.artifact, args.source)
-    if args.outputs:
-        from model_partitioner import output_check
-        args.outputs.mkdir(parents=True, exist_ok=True)
-        options = output_check.RunOptions(args.device, args.device_map,
-                                          _parse_max_memory(args.max_memory))
-        results.append(output_check.check_outputs(args.artifact, args.source, args.outputs,
-                                                  options))
+    results = verifier.verify_structure(args.partitions)
+    if args.cpu or args.gpu:
+        if any(r.status == constants.FAILED for r in results):
+            results.append(
+                models.CheckResult(
+                    constants.OUTPUT_CHECK_NAME,
+                    constants.UNVERIFIED,
+                    "skipped: structural checks failed",
+                )
+            )
+        else:
+            from model_partitioner.verification import output_check
+
+            options = (
+                models.RunOptions("cuda", "auto") if args.gpu else models.RunOptions()
+            )
+            results.append(output_check.check_outputs(args.partitions, options))
     for result in results:
-        print(f'{result.status:11} {result.name} {result.detail}')
+        print(f"{result.status:11} {result.name} {result.detail}")
     statuses = {result.status for result in results}
-    if verifier.FAILED in statuses:
-        return EXIT_FAILED
-    return EXIT_INCOMPLETE if verifier.UNVERIFIED in statuses else 0
+    if constants.FAILED in statuses:
+        return constants.EXIT_FAILED
+    if constants.UNVERIFIED in statuses:
+        return constants.EXIT_INCOMPLETE
+    return constants.EXIT_OK
 
 
 def _upload(args) -> int:
-    revision = hub.upload_artifact(args.artifact, args.dest_repo, private=not args.public)
-    print(f'uploaded revision {revision}')
-    return _report_upload(args.artifact, args.dest_repo, revision)
-
-
-def _verify_upload(args) -> int:
-    status = _report_upload(args.artifact, args.dest_repo, args.revision)
-    if args.load_unit and status == 0:
-        count = hub.check_load(args.dest_repo, args.revision, args.load_unit, args.load_dir)
-        print(f'loaded {count} tensors for {args.load_unit} and its dependencies')
-    return status
-
-
-def _report_upload(artifact: Path, repo: str, revision: str) -> int:
-    problems = hub.check_upload(artifact, repo, revision)
-    print('all declared files match the manifest' if not problems else '\n'.join(problems))
-    return EXIT_FAILED if problems else 0
+    with loader.Artifact(args.partitions) as artifact:
+        local = verifier.check_files(artifact)
+    print(f"{local.status:11} {local.name} {local.detail}")
+    if local.status != constants.PASSED:
+        return constants.EXIT_FAILED
+    created = hub.ensure_repo(args.repo)
+    print(
+        f"{'created private repo' if created else 'existing repo, visibility unchanged'}: "
+        f"{args.repo}"
+    )
+    revision = hub.upload_artifact(args.partitions, args.repo)
+    problems = hub.check_upload(args.partitions, args.repo, revision)
+    if problems:
+        print("\n".join(problems))
+        return constants.EXIT_FAILED
+    print(
+        f"uploaded {args.repo} at revision {revision}; declared files match the manifest"
+    )
+    return constants.EXIT_OK
 
 
 def main() -> None:
-    parser = _parser()
-    args = parser.parse_args()
-    if args.command == 'verify-upload' and bool(args.load_unit) != bool(args.load_dir):
-        parser.error('--load-unit and --load-dir go together')
-    handlers = {'inspect': _inspect, 'partition': _partition, 'verify': _verify,
-                'upload': _upload, 'verify-upload': _verify_upload}
-    sys.exit(handlers[args.command](args))
+    try:
+        args = _parser().parse_args()
+    except SystemExit as usage:
+        sys.exit(usage.code and constants.EXIT_FAILED)
+    handlers = {"partition": _partition, "verify": _verify, "upload": _upload}
+    try:
+        status = handlers[args.command](args)
+    except (ValueError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        status = constants.EXIT_FAILED
+    sys.exit(status)

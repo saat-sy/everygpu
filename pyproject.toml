@@ -16,5 +16,7 @@ model-partitioner-outputs = [
     "accelerate>=1.15",
 ]
 
+dev = ["black"]
+
 [tool.uv]
 package = false

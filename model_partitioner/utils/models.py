@@ -1,8 +1,9 @@
 """Data structures for specs, plans and the manifest. No I/O."""
+
 import dataclasses
 from dataclasses import dataclass, field
 
-from model_partitioner import constants
+from model_partitioner.utils import constants
 
 
 class UnsupportedLayout(ValueError):
@@ -11,6 +12,25 @@ class UnsupportedLayout(ValueError):
 
 class IncompleteSource(ValueError):
     """Raised when a source checkpoint is missing shards, tensors, layers or experts."""
+
+
+class ChecksumMismatch(ValueError):
+    """Raised when a loaded tensor does not match its manifest checksum."""
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    name: str
+    status: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class RunOptions:
+    """Where and how models run; device_map shards one model across devices."""
+
+    device: str = "cpu"
+    device_map: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,16 +138,19 @@ class Manifest:
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'Manifest':
-        if data['schema_version'] != constants.SCHEMA_VERSION:
+    def from_dict(cls, data: dict) -> "Manifest":
+        if data["schema_version"] != constants.SCHEMA_VERSION:
             raise ValueError(
                 f"manifest schema {data['schema_version']} is not readable by this tool "
-                f'(schema {constants.SCHEMA_VERSION}); re-run partition')
+                f"(schema {constants.SCHEMA_VERSION}); re-run partition"
+            )
         data = dict(data)
-        data['source_files'] = [SourceFile(**f) for f in data['source_files']]
-        data['source_tensors'] = {k: SourceTensor(**v) for k, v in data['source_tensors'].items()}
-        data['assets'] = {k: FileInfo(**v) for k, v in data['assets'].items()}
-        data['files'] = {k: FileInfo(**v) for k, v in data['files'].items()}
-        data['units'] = [Unit(**u) for u in data['units']]
-        data['tensors'] = [Piece(**p) for p in data['tensors']]
+        data["source_files"] = [SourceFile(**f) for f in data["source_files"]]
+        data["source_tensors"] = {
+            k: SourceTensor(**v) for k, v in data["source_tensors"].items()
+        }
+        data["assets"] = {k: FileInfo(**v) for k, v in data["assets"].items()}
+        data["files"] = {k: FileInfo(**v) for k, v in data["files"].items()}
+        data["units"] = [Unit(**u) for u in data["units"]]
+        data["tensors"] = [Piece(**p) for p in data["tensors"]]
         return cls(**data)

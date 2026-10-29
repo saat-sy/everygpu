@@ -23,6 +23,14 @@ On `distill`:
 3. Put the why behind architecture decisions in `docs/<topic>.md`, one decision per file, so no one re-derives it from the code.
 4. Promote any new standing rule to this file.
 
+## Formatting
+
+- Format all Python with `black` (dev dependency group `dev`) before finishing.
+
+## Comments
+
+- Docstrings, comments and help text are single lines. Never multi-line.
+
 ## Tests
 
 - Do not write tests unless the user asks.

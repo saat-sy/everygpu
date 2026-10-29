@@ -35,19 +35,20 @@ The implementation direction is a fresh build. The OLMoE prototype is reference 
 
 ## Model Partitioner runbook
 
-Run on a larger machine (OLMoE needs about 45 GB of disk; Muse about 537 GB source, 537 GB partitions and, for `verify --outputs`, a third 537 GB reassembled checkpoint: roughly 1.6 TB, plus any download cache). Install only its dependency group: `model-partitioner` for inspect, partition, upload and structural verify; `model-partitioner-outputs` also for `verify --outputs` (`uv sync --only-group model-partitioner-outputs`, or `pip install --group model-partitioner-outputs` with pip 25.1+; use a CUDA torch index for GPUs). Then run `python -m model_partitioner` from the repo root.
+Layout of `model_partitioner/`: `cli.py` entrypoint; `partition/` (adapters, source, partitioner); `verification/` (verifier, output_check); `artifact/` (loader, hub); `utils/` (constants, models, tensor_utils).
+
+Run on a larger machine. Disk: OLMoE about 45 GB; Muse about 537 GB for the cached original, 537 GB for the partitions and, for `verify --cpu/--gpu`, a third 537 GB reassembled checkpoint (scratch next to the partitions, removed afterwards): roughly 1.6 TB. Install only the needed dependency group: `model-partitioner`, or `model-partitioner-outputs` for output checks (`uv sync --only-group model-partitioner-outputs`, or `pip install --group ...` with pip 25.1+; use a CUDA torch index for GPUs). Authenticate with `hf auth login`; Muse also needs its license accepted on the Hub.
 
 ```
-# headers only, no weights (Muse needs HF_TOKEN with the license accepted)
-python -m model_partitioner inspect --family olmoe --repo-id allenai/OLMoE-1B-7B-0924 --revision 6d84c48581ece794365f2b8e9cfb043c68ade9c5
-hf download allenai/OLMoE-1B-7B-0924 --revision 6d84c48581ece794365f2b8e9cfb043c68ade9c5 --local-dir SRC
-python -m model_partitioner partition --family olmoe --source SRC --repo-id allenai/OLMoE-1B-7B-0924 --revision 6d84c48581ece794365f2b8e9cfb043c68ade9c5 --out ART --check-hub-hashes
-python -m model_partitioner verify --artifact ART --source SRC --outputs WORK [--device cuda:0 | --device-map auto --max-memory 0=70GiB,cpu=200GiB]
-python -m model_partitioner upload --artifact ART --dest-repo OWNER/REPO     # prints the uploaded revision
-python -m model_partitioner verify-upload --artifact ART --dest-repo OWNER/REPO --revision SHA --load-unit expert:0:3 --load-dir DIR
+python -m model_partitioner partition --model allenai/OLMoE-1B-7B-0924 [--output ./partitions]
+python -m model_partitioner verify ./partitions [--cpu | --gpu]
+python -m model_partitioner upload ./partitions --repo you/olmoe-partitions
 ```
 
-`verify` exits 0 when every check passes, 1 when any fails and 2 when a requested check could not run (for example Muse output equivalence without Blackwell hardware).
+- `partition --model` takes exactly `allenai/OLMoE-1B-7B-0924` or `meta-models/Muse-Spark-Open-816B-A42B-NVFP4`. It resolves the repo's current commit SHA, validates the config, then downloads weights at that SHA into the Hugging Face cache (reused on later runs), checks every shard against the Hub's sha256 and records repo and SHA in the manifest. The default output is `./partitions/<model name>`, which must be empty or new.
+- `verify` finds the original through the manifest's repo and SHA in the cache (downloading what is missing). Default: checksums, coverage, exact reconstruction, no GPU. `--cpu` or `--gpu` (automatic placement over all GPUs) also compare original and reassembled outputs. Muse NVFP4 output checks run only with `--gpu` on Blackwell with `nvidia-modelopt`.
+- `upload` checks local files, creates the repo as private if missing (an existing repo keeps its visibility), uploads only the files the manifest declares, and checks them against the manifest at the resulting revision. The result is an EveryGPU artifact, not a `from_pretrained` checkpoint. Large folders are split across several commits, and an interrupted upload is rerun from the start.
+- Exit 0: all requested checks passed. 1: a check or command failed. 2: a requested check could not run (no GPU, source unavailable, unsupported hardware); argparse usage errors also exit 2.
 
 ## Collaboration
 
