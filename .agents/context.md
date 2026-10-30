@@ -16,7 +16,7 @@ A client requests an answer; a worker offers GPU execution. One machine can run 
 - Explain the perfect-condition architecture first. Reliability direction is replication of expert weights and attention KV state where protection is needed; baseline implementation does not require recovery.
 - Immutable weight hosting on Hugging Face or object storage can coexist with decentralized scheduling. P2P weight distribution is a separate possible feature.
 
-Transport is open. Persistent gRPC connections are a suggestion; QUIC is an alternative requiring measurement, not a P2P requirement. Embedding, tokenization, output-head and sampling ownership remain open. The client selects placements; the model's learned router selects experts per token.
+Discovery uses py-libp2p; execution transport and serialization remain open. Persistent gRPC connections are a suggestion; QUIC is an alternative requiring measurement, not a P2P requirement. Embedding, tokenization, output-head and sampling ownership remain open. Workers choose resident weight placement at onboarding; clients select execution routes among ready workers; the model's learned router selects experts per token.
 
 The P2P architecture sections below contain the full design handoff, open decisions and conditional capacity/network estimates. These describe intended behavior and reasoning, not implemented or benchmarked results. Comparisons to other systems are background. Keep explanations anchored to the current question rather than introducing implementation checklists.
 
@@ -25,7 +25,7 @@ The P2P architecture sections below contain the full design handoff, open decisi
 The numbered files in `.agents/plan/` define the current roadmap, each intended for its own worktree:
 
 1. [Model partitioning](plan/1_model-partitioning_plan.md): existing artifact preparation and verification work.
-2. [Worker onboarding and DHT](plan/2_worker-onboarding-and-dht_plan.md): load assigned OLMoE pieces, join discovery and advertise readiness.
+2. [Worker onboarding and DHT](plan/2_worker-onboarding-and-dht_plan.md): join discovery, choose and load OLMoE pieces automatically, and advertise readiness.
 3. [Client tooling and discovery](plan/3_client-discovery_plan.md): query the DHT when a request arrives and identify compatible candidate coverage.
 4. [First P2P inference](plan/4_p2p-inference_plan.md): select and admit workers, execute OLMoE directly across peers and return generated text.
 
@@ -33,13 +33,36 @@ The roadmap stops at the first end-to-end OLMoE inference. Muse execution, multi
 
 ## State
 
-Current branch `model_partitioning` corresponds to `.agents/plan/1_model-partitioning_plan.md`. Plans 2–4 are not started.
+Current branch `onboarding` maps to [Plan 2](plan/2_worker-onboarding-and-dht_plan.md). The worker CLI is implemented. Claude reports local discovery and stubbed two-worker onboarding/inspection/shutdown checks on Linux aarch64 with `fastecdsa` overridden to 4.0.0. Codex independently checked cancellation, withdrawal failure/timeout handling and finite memory limits with external operations stubbed. Native Windows/macOS, real artifact retrieval, checksum failure paths, GPU loading, public bootstrap deployment and multi-machine internet runs remain unverified. Plan 2 is not verified end to end with its declared dependencies. Plans 3–4 are not started.
+
+Installation fixes are deferred by the user: declared `fastecdsa==2.3.2` fails to build here without GMP headers; `uv sync --only-group worker` also fails because uv resolves the outputs group's unavailable `accelerate>=1.16` constraint. Do not silently override dependencies or treat scratch-environment results as a successful declared installation.
+
+Plan 2 assumes reachable peer addresses. NAT traversal, hole punching, relays and cross-NAT communication stay in Plan 4. The user will not rent machines for tests; no connectivity extension was implemented. See [connectivity scope](docs/connectivity-scope.md).
 
 The user reports real OLMoE structural verification and bitwise-identical original/reassembled outputs on Colab. Codex independently checked all 87 declared files (82 partition files, 5 assets) in `saatwiksy/olmoe-partitions` at `be38d577a642e2c3ed0c79127899a59f261fb615`: sizes and hashes match. The manifest identifies source `allenai/OLMoE-1B-7B-0924` at `6d84c48581ece794365f2b8e9cfb043c68ade9c5`. Remote partition payloads were not downloaded or loaded.
 
 Plan 1's Muse partitioning, weight verification and upload remain unverified against the real checkpoint. Real Muse keys, artifacts, RAM requirements, tokenization and numerical execution compatibility remain unresolved. The user defers fresh remote unit loading and Muse model-output execution, cannot currently perform the large-GPU test and wants to move past it. Do not treat that test as a completed prerequisite or block architecture discussion on it.
 
 The runtime starting point is the existing OLMoE artifacts plus a fresh P2P implementation. Initial functional goal: one client sends a prompt through partitioned workers and receives generated text. Two GPU workers with some deliberately remote experts are a suggested deployment if assignments fit, not a validated placement. Distributed inference and benchmarks remain unvalidated.
+
+## Worker runbook
+
+Layout of `worker/`: `cli.py` parser and exit codes; `commands/` (serve, onboard, report); `discovery/` (node, records, advertiser, discovery); `placement/` (order, selection, summary); `loading/` (budget, manifest, download, resident); `utils/` (constants, models).
+
+Intended commands below require resolving the deferred installation blockers. The worker group targets Python 3.12–3.13; Linux needs GMP headers and a C compiler.
+
+```bash
+uv sync --only-group worker
+uv run --group worker python -m worker --new-network
+uv run --group worker python -m worker --bootstrap <address>
+uv run --group worker python -m worker inspect --bootstrap <address>
+```
+
+The first worker pins `saatwiksy/olmoe-partitions` to an immutable revision; joiners inherit it from DHT metadata. Workers use the first visible CUDA GPU (`CUDA_VISIBLE_DEVICES` selects another), with weight budget `0.8 * min(free VRAM, --max-vram GiB)`. The optional limit must be positive and finite. CUDA/NVIDIA is the GPU scope; documented macOS networking does not include Apple Silicon GPU support.
+
+Placement fills missing coverage, preferring whole uncovered layers before individual gaps; copies follow only once selected and observed units cover the model. Weights stay resident. Expert downloads group 16 experts, but loading is per expert. OLMoE weights total about 12.89 GiB before runtime overhead. Details: [placement](docs/worker-placement.md).
+
+Every reachable worker participates in the DHT. Accepted metadata replication uses the library default of up to 20 closest peers. Provider records mean "may serve"; a separate ready status expires after 180 seconds and refreshes every 60. Ready means verified resident weights and discovery publication, not implemented inference or reserved capacity. Ctrl+C withdraws availability best effort; failures/timeouts warn and preserve the original outcome. Startup I/O allows cancellation without waiting for worker threads. Details: [discovery records](docs/libp2p-discovery.md).
 
 ## Model Partitioner runbook
 
@@ -156,8 +179,7 @@ At the discussion's advertised A5000 starting rate of $0.27/GPU-hour, 27 rentals
 ### Open decisions
 
 - Transport and serialization; NAT traversal and relays.
-- DHT record schema and expiration.
-- Initial placement and replica balancing.
+- Concurrent onboarding placement coordination, rebalancing and load-aware weight copies.
 - Reservation granularity, expiration, admission and fairness.
 - Tokenization, embedding, output-head and sampling ownership.
 - Muse kernels and actual resident memory.

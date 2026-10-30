@@ -15,8 +15,16 @@ model-partitioner-outputs = [
     "transformers>=5.22",
     "accelerate>=1.16",
 ]
+worker = [
+    {include-group = "model-partitioner"},
+    # Exact pin: the worker sets a private KadDHT rate-limit attribute.
+    "libp2p==0.8.1",
+]
 
 dev = ["black"]
 
 [tool.uv]
 package = false
+
+[tool.uv.dependency-groups]
+worker = {requires-python = "<3.14"}
