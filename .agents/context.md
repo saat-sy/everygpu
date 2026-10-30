@@ -29,7 +29,11 @@ The eleven numbered files in `.agents/plan/` describe the features, each intende
 
 ## State
 
-Plans 2 to 11 are written but not started. Plan 1 (model partitioning) is implemented in `model_partitioner/` and checked on tiny local fixtures only: a random OLMoE with per-expert keys, and synthetic Muse-style NVFP4 layouts (fused and per-expert). No real OLMoE or Muse checkpoint has been partitioned, no shard has been uploaded, and Muse output equivalence is unverified (needs `nvidia-modelopt` and a Blackwell GPU). Muse tensor-name patterns come from the public Transformers code; the checkpoint is gated and its real keys are unchecked. No inference or benchmark has been validated.
+Current branch `model_partitioning` executes `.agents/plan/1_model-partitioning_plan.md`. Plans 2 to 11 are not started.
+
+The user reports real OLMoE structural verification and bitwise-identical original/reassembled outputs on Colab. Codex independently checked all 87 declared files (82 partition files, 5 assets) in `saatwiksy/olmoe-partitions` at `be38d577a642e2c3ed0c79127899a59f261fb615`: sizes and hashes match. The manifest identifies source `allenai/OLMoE-1B-7B-0924` at `6d84c48581ece794365f2b8e9cfb043c68ade9c5`. Remote partition payloads were not downloaded or loaded.
+
+Current focus: Muse NVFP4 partitioning, CPU weight verification and upload on a rented GCloud machine. Real Muse keys, artifacts, RAM requirements and tokenization compatibility remain unverified; inspect real headers before the full download. The user defers fresh remote unit loading and Muse model-output execution. Distributed inference and benchmarks remain unvalidated.
 
 The implementation direction is a fresh build. The OLMoE prototype is reference material only.
 
@@ -37,19 +41,21 @@ The implementation direction is a fresh build. The OLMoE prototype is reference 
 
 Layout of `model_partitioner/`: `cli.py` entrypoint; `partition/` (adapters, source, partitioner); `verification/` (verifier, output_check); `artifact/` (loader, hub); `utils/` (constants, models, tensor_utils).
 
-Run on a larger machine. Disk: OLMoE about 45 GB; Muse about 537 GB for the cached original, 537 GB for the partitions and, for `verify --cpu/--gpu`, a third 537 GB reassembled checkpoint (scratch next to the partitions, removed afterwards): roughly 1.6 TB. Install only the needed dependency group: `model-partitioner`, or `model-partitioner-outputs` for output checks (`uv sync --only-group model-partitioner-outputs`, or `pip install --group ...` with pip 25.1+; use a CUDA torch index for GPUs). Authenticate with `hf auth login`; Muse also needs its license accepted on the Hub.
+Install `model-partitioner` for preparation and weight verification, or `model-partitioner-outputs` for model-output execution (`uv sync --only-group GROUP`). Authenticate with `hf auth login`; Muse also needs approved Hub access.
+
+Disk holds the cached source and partitions: about 28 GB for OLMoE or 1.07 TB for Muse, plus software and free-space headroom. Model-output verification adds a temporary reassembled checkpoint: about 42 GB total for OLMoE or 1.6 TB for Muse before overhead. Muse peak RAM is unmeasured; 64 GB is a target to investigate, not a validated requirement.
 
 ```
-python -m model_partitioner partition --model allenai/OLMoE-1B-7B-0924 [--output ./partitions]
-python -m model_partitioner verify ./partitions [--cpu | --gpu]
+python -m model_partitioner partition --model allenai/OLMoE-1B-7B-0924 --output ./partitions
+python -m model_partitioner verify ./partitions
 python -m model_partitioner upload ./partitions --repo you/olmoe-partitions
 ```
 
 - `partition --model` takes exactly `allenai/OLMoE-1B-7B-0924` or `meta-models/Muse-Spark-Open-816B-A42B-NVFP4`. It resolves the repo's current commit SHA, validates the config, then downloads weights at that SHA into the Hugging Face cache (reused on later runs), checks every shard against the Hub's sha256 and records repo and SHA in the manifest. The default output is `./partitions/<model name>`, which must be empty or new.
-- `verify` finds the original through the manifest's repo and SHA in the cache (downloading what is missing). Default: checksums, coverage, exact reconstruction, no GPU. `--cpu` or `--gpu` (automatic placement over all GPUs) also compare original and reassembled outputs. Muse NVFP4 output checks run only with `--gpu` on Blackwell with `nvidia-modelopt`.
+- `verify` finds the original through the manifest's repo and SHA in the cache (downloading what is missing). Default: checksums, coverage, exact reconstruction, no model execution or GPU. Optional mutually exclusive `--cpu` and `--gpu` compare model outputs using the selected hardware. Muse CPU output execution is unsupported; its GPU path needs compatible NVFP4 hardware and remains unverified.
 - `upload` checks local files, creates the repo as private if missing (an existing repo keeps its visibility), uploads only the files the manifest declares, and checks them against the manifest at the resulting revision. The result is an EveryGPU artifact, not a `from_pretrained` checkpoint. Large folders are split across several commits, and an interrupted upload is rerun from the start.
-- Exit 0: all requested checks passed. 1: a check or command failed. 2: a requested check could not run (no GPU, source unavailable, unsupported hardware); argparse usage errors also exit 2.
+- Exit 0: all requested checks passed. 1: a check or command failed. 2: a requested check could not run (no GPU, source unavailable, unsupported hardware). Usage errors exit 1.
 
 ## Collaboration
 
-Use simple explanations and concrete request traces. Keep plan documents focused on goals, requirements, steps, decisions and verification rather than prescribing implementation details. Distinguish agreed requirements from proposals and measured results from assumptions.
+Codex plans and reviews; Claude implements when delegation is authorized. Follow the Codex collaboration agreement in `housekeeping.md` and the separate planner Learnings in Plan 1. The user expects to understand the concrete result before implementation, then receive complete follow-through within the agreed scope. Individual feedback is not relayed to Claude without authorization.

@@ -6,7 +6,7 @@ An offline Model Partitioner that turns an OLMoE or Muse Spark Open (NVFP4) chec
 
 ## Status
 
-Code complete and checked on local fixtures. Real-checkpoint runs, uploads and Muse validation remain; see Verification.
+Implementation is available. The user reports real OLMoE structural and GPU output verification passed on Colab; its upload is independently verified at Hub file-integrity level. Current work is Muse partitioning, CPU weight verification and upload on a rented machine. Fresh remote unit loading is deferred by the user; Muse output execution is deferred for cost.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Code complete and checked on local fixtures. Real-checkpoint runs, uploads and M
 
 ## Decisions
 
-- Expert files hold `--experts-per-file` experts (default 16) so Muse's 15,872 experts stay in about a thousand files; each expert remains a separately addressable unit inside its file.
+- Expert files hold 16 experts so Muse's 15,872 experts stay in about a thousand files; each expert remains a separately addressable unit inside its file. See `docs/unit-granularity.md` and `docs/pinned-source-and-publishing.md` for why.
 - Model-output equivalence loads the original and a reassembled checkpoint through Transformers with identical inputs, eval mode and dtype. Muse NVFP4 output equivalence additionally needs ModelOpt-capable kernels and Blackwell hardware; without them it is reported unverified, and byte-exact reconstruction is the only claim.
 - Each adapter accepts only an explicit list of layer, embedding and final tensor names, and `partition` checks that config `model_type` matches the family; anything else fails loudly. Muse's list comes from the public Transformers modeling code (including quantization suffixes); the checkpoint is gated, so it is unchecked against real keys.
 - Muse's root file `l4_200k_base` (3.6 MB, no extension, likely a tokenizer ranks file; unconfirmed because the Muse tokenizer config is gated) is preserved byte for byte as an asset. Whether the artifact is self-contained for tokenization stays unverified.
@@ -41,9 +41,37 @@ Code complete and checked on local fixtures. Real-checkpoint runs, uploads and M
 - Coverage: every source tensor is covered exactly once (slices tile the expert dimension); no extra tensors.
 - Every tensor and file checksum matches; every source tensor is reconstructed byte-exactly.
 - OLMoE original and reassembled logits agree within tolerance.
-- Real OLMoE and Muse runs and uploads are done by the owner on a larger machine; this checkout validates code on local fixtures only.
+- User-reported real OLMoE run on Colab: `verify` passed file checksums, coverage and exact reconstruction; `verify --gpu` also passed output equivalence on the tested inputs (max abs logits diff 0, bitwise equal, device auto). The run was not independently executed; GPU model and exact commands were not supplied.
+- OLMoE upload, inspected independently by Codex through the Hugging Face API: `saatwiksy/olmoe-partitions` at revision `be38d577a642e2c3ed0c79127899a59f261fb615`, built from `allenai/OLMoE-1B-7B-0924` at `6d84c48581ece794365f2b8e9cfb043c68ade9c5`. It has 1,042 units, 82 partition files (13,838,715,664 bytes) and 5 assets. All 87 declared files are present with matching sizes and hashes: partition files against Hub LFS sha256, small non-LFS assets downloaded and hashed. Partition payloads were not downloaded and no remote unit was loaded.
+- Pending: real Muse checkpoint compatibility, partitioning, CPU weight verification and upload. Inspect accessible real headers before a large download or rental recommendation; 64 GB RAM is an unverified target, not a measured minimum.
+- Deferred by the user: fresh retrieval/loading of a remote unit and Muse model-output execution. Plain `verify` requires no GPU; `--cpu` executes the model on CPU and is not a synonym for structural checks.
 - `upload` compares every declared file at the uploaded revision with the manifest (needs destination repo and token). Retrieving an uploaded artifact and loading its units with the loader is not automated.
 
 ## Learnings
 
-- Agree on concrete command examples, arguments, defaults and behavior with the user before implementation. Treat unresolved product choices as questions, not requirements. Give Claude only the agreed scope; avoid speculative features, files and abstractions. Routine implementation and review fixes can proceed within that scope without another approval.
+### Claude (implementer)
+
+- Before building a CLI, propose exact commands, flags, defaults and examples and wait for approval. The first build exposed seven subcommands and many flags where three commands were wanted. Prefer the fewest arguments: positional where obvious, and derive revision, source and family from the Hub, config or manifest.
+- Build only what was asked: no extra files, modules, aliases, frameworks or standing rules. Record a rule in housekeeping only when the user asks.
+- When told to remove something, remove all of it in one pass: flags, helpers, imports, constants, docs and dependency groups. Grep for stale references.
+- Answer a direct question with the true state before acting; never imply completion. Say what is built, run and unverified. "Ack me" means acknowledge, then wait.
+- Follow an interruption immediately. Never retry a declined command verbatim.
+- This host is for code and fixtures. Do not download models or run real checkpoints, GPUs or uploads here, and ask first. Delete accidental downloads.
+- Clean up before reporting: replaced files, temporary installs, caches and scratch.
+- Lay out the package by feature with a shared `utils/` from the start, following large-repo norms, instead of a flat folder.
+- Check real library APIs with `inspect` or `--help` before use. Mocks hid a missing `HfApi.upload_large_folder` and an unimported `huggingface_hub.errors`. Add unmocked offline checks, such as `HF_HUB_OFFLINE=1` with a fake cache.
+- Build fail-closed from the start: verify every shard and asset, validate arguments and destinations before expensive work, report disk and network needs before a download, and refuse unsafe states. Review found each of these late.
+- Run negative controls (corrupt a byte, drop a tensor, go offline, delete a file); passing runs alone prove little.
+- After each milestone, ping Codex (`ping list` for names) with changed definitions, checks run and unverified paths. Do not claim Muse, NVFP4, GPU or Hub behavior without a real run, and label user-reported results as user-reported.
+
+### Codex (planner)
+
+- Start with what the user will actually run and receive. Agree on installation, command examples, defaults, outputs and the definition of done before implementation; a technically valid core alone is not the requested end-to-end result.
+- Ask about consequential product choices early. Download behavior, model selection, output location, verification modes and upload workflow need explicit agreement; inferred requirements cause implementation and cleanup loops.
+- Simplicity means few decisions for the user, not an arbitrary number of commands or flags. Accept repository IDs, automate revision tracking and cache lookup, make output paths optional, and keep partition, verify and upload as clear operations.
+- Delegate the agreed result in one self-contained handoff. Include project purpose, current plan, approved examples, constraints, verification and exclusions so a fresh implementer session does not need the user to repeat context. Do not add speculative features to the handoff.
+- Finish routine follow-through without waiting for repeated prompts: send authorized work, review it, relay defects and verify fixes. Pause for unresolved requirements, new scope and the next numbered plan; respect requests to keep feedback individual.
+- Honor response-only requests: "ack only" means acknowledge and stop; "show me the arguments" means explain the current interface before proposing or implementing changes. Label proposals, implemented behavior and verified results distinctly.
+- Audit behavior, not just code size or successful fixtures. Check manifest relationships, missing/corrupt inputs, provenance, destination safety and actual dependency APIs. Keep shared constants/data structures consistent without mechanical file merging or speculative frameworks.
+- Separate artifact correctness from full-model execution. Report exactly which model, inputs and stages passed; fixture success does not establish real Muse support, output equivalence or distributed inference. Record user-deferred checks explicitly.
+- Give environment-specific runnable instructions using the current working tree. Account for unpushed code, hardware, disk copies and dependency compatibility. Present memory/time figures as estimates until measured; inspect real tensor headers before advising a costly rental.
