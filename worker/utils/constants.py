@@ -1,0 +1,17 @@
+"""Shared constants and defaults for the worker."""
+
+DEFAULT_REPO = "saatwiksy/olmoe-partitions"
+RECORD_NAMESPACE = "everygpu"
+NETWORK_KEY = "/everygpu/network"
+PEER_KEY_PREFIX = "/everygpu/peer/"
+REFRESH_SECONDS = 60
+EXPIRATION_SECONDS = 180
+BOOTSTRAP_TIMEOUT_SECONDS = 15
+WITHDRAW_TIMEOUT_SECONDS = 15
+LOOKUP_CONCURRENCY = 8
+PROVIDER_LOOKUP_COUNT = 1000
+PROVIDER_RATE_MAX = 1_000_000
+LIBP2P_LOGGER = "libp2p"
+WEIGHT_FRACTION = 0.8
+DEVICE = "cuda"
+GIB = 1 << 30

@@ -33,7 +33,7 @@ The roadmap stops at the first end-to-end OLMoE inference. Muse execution, multi
 
 ## State
 
-Current branch `model_partitioning` corresponds to `.agents/plan/1_model-partitioning_plan.md`. Plans 2–4 are not started.
+Current branch `onboarding` corresponds to `.agents/plan/2_worker-onboarding-and-dht_plan.md`. Plan 2 is the current focus; its `worker/` package uses py-libp2p and its discovery and stubbed onboarding flow ran against local peers on Linux; native Windows/macOS, real artifact retrieval, GPU loading and multi-machine runs are unverified, and its implementation defaults await user review. Plans 3–4 are not started.
 
 The user reports real OLMoE structural verification and bitwise-identical original/reassembled outputs on Colab. Codex independently checked all 87 declared files (82 partition files, 5 assets) in `saatwiksy/olmoe-partitions` at `be38d577a642e2c3ed0c79127899a59f261fb615`: sizes and hashes match. The manifest identifies source `allenai/OLMoE-1B-7B-0924` at `6d84c48581ece794365f2b8e9cfb043c68ade9c5`. Remote partition payloads were not downloaded or loaded.
 
