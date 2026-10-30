@@ -56,4 +56,16 @@ def _has_status_fields(data: dict) -> bool:
         and isinstance(data.get("seq"), int)
         and isinstance(data.get("expires"), (int, float))
         and isinstance(data.get("addrs"), list)
+        and _valid_execution(data.get("exec"))
+    )
+
+
+def _valid_execution(value) -> bool:
+    """The optional execution endpoint: absent, or a host and a TCP port."""
+    return value is None or (
+        isinstance(value, dict)
+        and isinstance(value.get("host"), str)
+        and bool(value["host"])
+        and type(value.get("port")) is int
+        and 0 < value["port"] < 65536
     )

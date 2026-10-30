@@ -11,6 +11,7 @@ import trio
 from model_partitioner.utils import constants as partitioner_constants
 from worker.commands import report
 from worker.commands import serve
+from worker.execution import endpoint
 from worker.utils import constants
 from worker.utils import models
 
@@ -35,6 +36,26 @@ def _parser() -> argparse.ArgumentParser:
         metavar="GIB",
         help="cap on GPU memory this worker plans to use, in GiB",
     )
+    parser.add_argument(
+        "--exec-host",
+        default=constants.EXEC_BIND_HOST,
+        metavar="HOST",
+        help="address the execution server binds to (default %(default)s)",
+    )
+    parser.add_argument(
+        "--exec-port",
+        type=_port,
+        default=constants.EXEC_PORT,
+        metavar="PORT",
+        help="TCP port the execution server binds to; 0 picks a free one (default %(default)s)",
+    )
+    parser.add_argument(
+        "--advertise-exec",
+        type=endpoint.parse,
+        metavar="HOST:PORT",
+        help="execution endpoint peers should dial, e.g. a tunnel's public address "
+        "(default: bind host, or this node's first non-loopback IPv4)",
+    )
     sub = parser.add_subparsers(dest="command")
     inspect = sub.add_parser(
         "inspect",
@@ -45,6 +66,12 @@ def _parser() -> argparse.ArgumentParser:
         "--bootstrap", nargs="+", required=True, metavar="ADDRESS", help="peers to ask"
     )
     return parser
+
+
+def _port(text: str) -> int:
+    if not text.isdigit() or int(text) > 65535:
+        raise argparse.ArgumentTypeError(f"invalid port {text!r}")
+    return int(text)
 
 
 def main() -> None:

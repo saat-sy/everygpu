@@ -25,12 +25,14 @@ async def run(args) -> int:
         print("not found in the DHT now:")
         print("  " + "\n  ".join(summary.describe(manifest, set(missing))))
     workers: dict[str, list[str]] = {}
-    addrs: dict[str, list[str]] = {}
+    statuses = {}
     for unit_id in unit_ids:
-        for peer, peer_addrs in found[unit_id].items():
+        for peer, status in found[unit_id].items():
             workers.setdefault(peer, []).append(unit_id)
-            addrs[peer] = peer_addrs
+            statuses[peer] = status
     for peer, served in workers.items():
-        print(f"worker {peer} ({len(served)} units) at {', '.join(addrs[peer])}")
+        status = statuses[peer]
+        print(f"worker {peer} ({len(served)} units) at {', '.join(status.addrs)}")
+        print(f"  execution endpoint: {status.execution or 'not advertised'}")
         print("  " + "\n  ".join(summary.describe(manifest, set(served))))
     return partitioner_constants.EXIT_OK

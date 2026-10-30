@@ -6,11 +6,13 @@ import time
 import trio
 from libp2p.kad_dht.kad_dht import KadDHT
 
+from worker.discovery import models
 from worker.discovery import records
+from worker.execution import models as execution_models
 from worker.utils import constants
 
-PeerAddresses = dict[str, list[str]]  # peer id -> dialable addresses
-Coverage = dict[str, PeerAddresses]  # unit id -> its ready providers
+PeerStatuses = dict[str, models.PeerStatus]  # peer id -> ready status
+Coverage = dict[str, PeerStatuses]  # unit id -> its ready providers
 
 
 async def read_network_pin(dht: KadDHT) -> tuple[str, str]:
@@ -39,24 +41,24 @@ async def find_coverage(
             nursery.start_soon(_find_providers, dht, key, limiter, providers)
 
     # Each provider's status is fetched once, however many pieces it provides.
-    ready_addresses: PeerAddresses = {}
+    ready_statuses: PeerStatuses = {}
     async with trio.open_nursery() as nursery:
         for peer in set().union(*providers.values()):
             nursery.start_soon(
-                _fetch_ready_addresses,
+                _fetch_ready_statuses,
                 dht,
                 repo,
                 revision,
                 peer,
                 limiter,
-                ready_addresses,
+                ready_statuses,
             )
 
     return {
         unit_id: {
-            peer: ready_addresses[peer]
+            peer: ready_statuses[peer]
             for peer in providers[key]
-            if peer in ready_addresses
+            if peer in ready_statuses
         }
         for key, unit_id in keys.items()
     }
@@ -73,15 +75,15 @@ async def _find_providers(
     providers[key] = {str(info.peer_id) for info in infos}
 
 
-async def _fetch_ready_addresses(
+async def _fetch_ready_statuses(
     dht: KadDHT,
     repo: str,
     revision: str,
     peer: str,
     limiter: trio.CapacityLimiter,
-    ready_addresses: PeerAddresses,
+    ready_statuses: PeerStatuses,
 ) -> None:
-    """Record the peer's addresses only if its status is ready, unexpired and on this revision."""
+    """Record the peer's status only if it is ready, unexpired and on this revision."""
     key = records.peer_key(peer)
     async with limiter:
         raw = await dht.get_value(key)
@@ -95,4 +97,9 @@ async def _fetch_ready_addresses(
         and status["expires"] > time.time()
         and (status["repo"], status["revision"]) == (repo, revision)
     ):
-        ready_addresses[peer] = status["addrs"]
+        execution = status.get("exec")
+        ready_statuses[peer] = models.PeerStatus(
+            status["addrs"],
+            execution
+            and execution_models.Endpoint(execution["host"], execution["port"]),
+        )
