@@ -11,6 +11,7 @@ from worker.discovery import advertiser
 from worker.discovery import discovery
 from worker.discovery import node
 from worker.execution import endpoint
+from worker.execution import forward
 from worker.execution import server as execution_server
 from worker.execution import sessions
 from worker.loading import budget
@@ -37,7 +38,10 @@ async def run(args) -> int:
         print(f"artifact: {repo} @ {revision}")
         try:
             async with trio.open_nursery() as nursery:
-                executor = execution_server.ExecutionServer(sessions.SessionTable())
+                runner = forward.StageRunner()
+                executor = execution_server.ExecutionServer(
+                    sessions.SessionTable(), runner.forward
+                )
                 port = await nursery.start(
                     executor.serve, args.exec_host, args.exec_port
                 )
@@ -52,7 +56,7 @@ async def run(args) -> int:
                     f"{ads.execution or 'none (pass --advertise-exec HOST:PORT)'}"
                 )
                 nursery.start_soon(ads.refresh_forever)
-                units = await onboard.run(dht, ads, weight_budget)
+                units = await onboard.run(dht, ads, weight_budget, runner)
                 print(f"READY: {len(units)} units resident; Ctrl+C withdraws and stops")
                 await trio.sleep_forever()
         finally:

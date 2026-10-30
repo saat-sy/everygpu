@@ -1,9 +1,12 @@
 """Onboarding: choose, load and announce the pieces this worker will serve."""
 
+import sys
+
 import trio
 
 from worker.discovery import advertiser
 from worker.discovery import discovery
+from worker.execution import forward
 from worker.loading import manifest as manifest_loading
 from worker.loading import resident
 from worker.placement import order
@@ -11,7 +14,9 @@ from worker.placement import selection
 from worker.placement import summary
 
 
-async def run(dht, ads: advertiser.Advertiser, weight_budget: int) -> dict:
+async def run(
+    dht, ads: advertiser.Advertiser, weight_budget: int, runner: forward.StageRunner
+) -> dict:
     """Choose, load and announce pieces; ready only if every step succeeded; return resident units."""
     repo, revision = ads.repo, ads.revision
     manifest = await trio.to_thread.run_sync(
@@ -35,6 +40,10 @@ async def run(dht, ads: advertiser.Advertiser, weight_budget: int) -> dict:
     print(
         f"resident: {sum(t.nbytes for u in weights.values() for t in u.values()):,} bytes"
     )
+    try:
+        runner.install(manifest.config, weights)
+    except ValueError as error:
+        print(f"warning: forward execution disabled: {error}", file=sys.stderr)
     failed = await ads.announce_pieces(chosen)
     if failed:
         raise RuntimeError(

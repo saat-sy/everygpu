@@ -31,6 +31,7 @@ class SessionTable:
     def release(self, session_id: str) -> bool:
         session = self._sessions.pop(session_id, None)
         if session is not None:
+            session.closed = True
             session.state.clear()
         return session is not None
 
