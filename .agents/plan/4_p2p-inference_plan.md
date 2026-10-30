@@ -6,7 +6,7 @@ One client discovers and selects workers, sends a prompt through partitioned OLM
 
 ## Status
 
-Planned. Implementation has not started. Requires Plans 2 and 3.
+Planned. Implementation has not started. Uses Plan 2's worker records and Plan 3's HTTP server. Request-time discovery is deferred from Plan 3 and must be implemented before route selection and execution.
 
 ## Requirements
 
@@ -20,16 +20,16 @@ Planned. Implementation has not started. Requires Plans 2 and 3.
 
 ## Steps
 
-1. Agree on the runnable end-to-end workflow, worker assignments, transport/serialization, capacity confirmation and generation ownership. Check connectivity between the selected machines.
-2. Add client-side route selection and worker admission to Plan 3's discovery results.
+1. Agree on the runnable end-to-end workflow, saved bootstrap configuration, worker assignments, transport/serialization, capacity confirmation and generation ownership. Check connectivity between the selected machines.
+2. Connect the HTTP server to request-time discovery: inherit the network's pinned artifact revision, find current compatible coverage for every required unit, and report explicit failures for missing coverage. Add client-side route selection and worker admission to these discovery results.
 3. Implement OLMoE stage/expert execution from the existing partitions, direct communication and the session's prefill/decode lifecycle.
-4. Run a controlled numerical comparison and then the real distributed prompt-to-text demonstration in an approved environment.
+4. Connect generated tokens to the HTTP API, including OpenAI-compatible server-sent events for streaming requests. Run a controlled numerical comparison and then the real distributed prompt-to-text demonstration in an approved environment.
 
 ## Decisions
 
 Start with one active request under perfect conditions. The demonstration must use multiple workers, cross a stage boundary and execute selected experts remotely; two GPU workers are sufficient if assignments fit. This does not require separate GPU fleets for stages and experts.
 
-Transport, reachable deployment and numerical tolerance must be settled before implementation. No local-only runtime milestone is required. Streaming UI, multi-client optimization, replication, recovery, a benchmark suite and Muse execution are outside this plan.
+Transport, reachable deployment and numerical tolerance must be settled before implementation. Callers send text conversations and a public model name; bootstrap configuration and artifact revision handling belong inside the service. Streaming API responses are required; streaming UI, multi-client optimization, replication, recovery, a benchmark suite and Muse execution are outside this plan.
 
 ## Verification
 

@@ -21,6 +21,11 @@ worker = [
     "libp2p==0.8.1",
 ]
 
+client = [
+    "starlette>=1.10",
+    "uvicorn>=0.54",
+]
+
 dev = ["black"]
 
 [tool.uv]

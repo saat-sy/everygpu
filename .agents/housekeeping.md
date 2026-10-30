@@ -12,7 +12,7 @@ Rules for application work in this repo. Read this and `context.md` first. Messa
 - A plan is a branch. Working on branch `X` means `.agents/plan/X_plan.md` exists.
 - Write the plan after the user gives requirements and you have clarified doubts. No code before the plan.
 - Plan holds: goal, requirements, steps, decisions, and a `Learnings` section.
-- Read the plan's `Learnings` and this file before implementing. Do not repeat a recorded mistake.
+- Before starting a plan, read prior plans' `Learnings`, the current plan's `Learnings` and this file. Do not repeat a recorded mistake.
 
 ## Codex collaboration
 

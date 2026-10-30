@@ -26,14 +26,16 @@ The numbered files in `.agents/plan/` define the current roadmap, each intended 
 
 1. [Model partitioning](plan/1_model-partitioning_plan.md): existing artifact preparation and verification work.
 2. [Worker onboarding and DHT](plan/2_worker-onboarding-and-dht_plan.md): join discovery, choose and load OLMoE pieces automatically, and advertise readiness.
-3. [Client tooling and discovery](plan/3_client-discovery_plan.md): query the DHT when a request arrives and identify compatible candidate coverage.
+3. [OpenAI-compatible HTTP server](plan/3_client-discovery_plan.md): serve `/v1/models` and validate chat requests; generation returns 501. DHT discovery on request is deferred to Plan 4's prerequisites.
 4. [First P2P inference](plan/4_p2p-inference_plan.md): select and admit workers, execute OLMoE directly across peers and return generated text.
 
 The roadmap stops at the first end-to-end OLMoE inference. Muse execution, multi-client optimization and replication remain future directions without implementation plans. Execute one numbered plan at a time, report its result and wait for explicit approval before starting the next. Approval to edit the roadmap does not authorize implementation.
 
 ## State
 
-Current branch `onboarding` maps to [Plan 2](plan/2_worker-onboarding-and-dht_plan.md). The worker CLI is implemented. Claude reports local discovery and stubbed two-worker onboarding/inspection/shutdown checks on Linux aarch64 with `fastecdsa` overridden to 4.0.0. Codex independently checked cancellation, withdrawal failure/timeout handling and finite memory limits with external operations stubbed. Native Windows/macOS, real artifact retrieval, checksum failure paths, GPU loading, public bootstrap deployment and multi-machine internet runs remain unverified. Plan 2 is not verified end to end with its declared dependencies. Plans 3–4 are not started.
+Current branch `client` maps to [Plan 3](plan/3_client-discovery_plan.md): the HTTP server is implemented. Codex's initial review passed AST parsing, Black and Pyflakes for 11 client Python files, plus TOML, empty-initializer and whitespace checks. Claude reports compilation and Black passing for the latest startup, body-limit and error-handler fixes; independent revalidation is pending. Claude also exercised address parsing as a pure function. Declared installation, server startup and HTTP behavior remain unverified. The client has no EveryGPU network connection. Plan 4 must add discovery, admission, inference and generated-token streaming; it is not started.
+
+Plan 2's worker CLI is implemented. Claude reports local discovery and stubbed two-worker onboarding/inspection/shutdown checks on Linux aarch64 with `fastecdsa` overridden to 4.0.0. Codex independently checked cancellation, withdrawal failure/timeout handling and finite memory limits with external operations stubbed. Native Windows/macOS, real artifact retrieval, checksum failure paths, GPU loading, public bootstrap deployment and multi-machine internet runs remain unverified. Plan 2 is not verified end to end with its declared dependencies.
 
 Installation fixes are deferred by the user: declared `fastecdsa==2.3.2` fails to build here without GMP headers; `uv sync --only-group worker` also fails because uv resolves the outputs group's unavailable `accelerate>=1.16` constraint. Do not silently override dependencies or treat scratch-environment results as a successful declared installation.
 
@@ -63,6 +65,20 @@ The first worker pins `saatwiksy/olmoe-partitions` to an immutable revision; joi
 Placement fills missing coverage, preferring whole uncovered layers before individual gaps; copies follow only once selected and observed units cover the model. Weights stay resident. Expert downloads group 16 experts, but loading is per expert. OLMoE weights total about 12.89 GiB before runtime overhead. Details: [placement](docs/worker-placement.md).
 
 Every reachable worker participates in the DHT. Accepted metadata replication uses the library default of up to 20 closest peers. Provider records mean "may serve"; a separate ready status expires after 180 seconds and refreshes every 60. Ready means verified resident weights and discovery publication, not implemented inference or reserved capacity. Ctrl+C withdraws availability best effort; failures/timeouts warn and preserve the original outcome. Startup I/O allows cancellation without waiting for worker threads. Details: [discovery records](docs/libp2p-discovery.md).
+
+## Client runbook
+
+Layout of `client/`: `__main__.py` entrypoint; `server/` (serve, config, errors, validation, app); `utils/` (constants, models). The dependency group contains Starlette and Uvicorn, with no GPU or DHT dependencies; see [framework rationale](docs/client-server-framework.md). The deferred `accelerate>=1.16` blocker can still break `uv sync`.
+
+```bash
+uv sync --only-group client
+uv run --group client python -m client
+EVERYGPU_HOST=0.0.0.0:42731 uv run --group client python -m client
+```
+
+With client dependencies available in the active environment, the direct command is `python -m client`. Default `127.0.0.1:42731`, overridable through `EVERYGPU_HOST=host:port`; no bootstrap or revision argument is needed. Invalid configuration exits 2; an occupied port or failed startup exits 1; Ctrl+C after startup exits 0. See [listening configuration](docs/client-listening-address.md).
+
+`GET /v1/models` lists `olmoe` as the intended model, not worker availability. `POST /v1/chat/completions` accepts text `system`/`user`/`assistant` messages and boolean `stream` (default false). Malformed or unsupported input returns 400, unknown models 404, bodies over 1 MiB 413, unexpected failures 500, and every valid request 501 `generation_not_implemented` before any stream. Errors use the OpenAI error shape. These are implemented code paths, not runtime-verified results. See [API and network boundary](docs/client-api-boundary.md).
 
 ## Model Partitioner runbook
 
