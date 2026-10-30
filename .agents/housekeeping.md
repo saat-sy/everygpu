@@ -19,7 +19,7 @@ Rules for application work in this repo. Read this and `context.md` first. Messa
 - Before coding or delegation, show the concrete workflow: commands, inputs, outputs, defaults and completion criteria. Ask about unresolved product choices; do not turn proposals into requirements.
 - After agreement, carry routine implementation, review fixes and authorized handoffs forward without another prompt. Ask before changing user-facing scope; wait for approval at numbered plan boundaries.
 - Codex plans and audits; Claude implements when delegation is authorized. Give a fresh implementer session a self-contained handoff with agreed behavior, constraints and verification. Check separate user instructions before challenging another agent's changes.
-- Keep only what the agreed workflow needs. Do not invent commands, argument limits, files, abstractions or standing rules. Choose sensible defaults for mechanical details; make consequential behavior explicit.
+- Apply YAGNI strongly: keep only what the agreed workflow needs. Prefer clear responsibilities and flow over generic helpers or extra layers. Do not invent commands, argument limits, files, abstractions or standing rules. Choose sensible defaults for mechanical details; make consequential behavior explicit.
 - Report fixture results, real-checkpoint results and remaining work separately. Label unmeasured resource and timing estimates; inspect tensor sizes and code memory usage before rental advice. Keep individual feedback private when requested.
 
 ## Distill
@@ -37,6 +37,7 @@ On `distill`:
 - Docstrings, comments and help text are single lines. Never multi-line.
 - Every `__init__.py` stays empty.
 - Group code in feature subpackages with a shared `utils/` (constants, models, helpers); keep the package top level to the entrypoint.
+- One responsibility per file; more files are fine when each is independent. Name operations explicitly and keep helpers private next to the code that uses them.
 - Each component installs from its own dependency group in the root `pyproject.toml`.
 
 ## Environment
