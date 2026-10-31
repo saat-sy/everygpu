@@ -41,9 +41,12 @@ class Endpoint:
 class Session:
     session_id: str
     owner: int
+    route: tuple["Hop", ...] = ()
+    index: int = 0
     state: dict = dataclasses.field(default_factory=dict)
     closed: bool = False
     lock: trio.Lock = dataclasses.field(default_factory=trio.Lock)
+    scope: trio.CancelScope | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +61,15 @@ class StageDescriptor:
     final: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class Hop:
+    """A worker that executes one stage, reachable at its execution endpoint."""
+
+    peer: str
+    endpoint: Endpoint
+    stage: StageDescriptor
+
+
 class StageError(ValueError):
     """The resident units or config cannot form an executable stage."""
 
@@ -70,6 +82,7 @@ class ForwardRequest:
     token_ids: list[int] | None = None
     shape: tuple[int, ...] | None = None
     dtype: str | None = None
+    step: int = 0
 
 
 @dataclasses.dataclass(frozen=True)

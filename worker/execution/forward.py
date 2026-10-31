@@ -1,5 +1,6 @@
 """FORWARD handler: validates, runs this worker's stage off the event loop, commits session caches."""
 
+import dataclasses
 import math
 import types
 
@@ -7,6 +8,7 @@ import torch
 import trio
 
 from worker.execution import models
+from worker.execution import relay
 from worker.execution import stage as stage_lib
 
 _DTYPES = types.MappingProxyType(
@@ -43,11 +45,23 @@ class StageRunner:
         if stage is None:
             raise models.RequestError("unavailable", self.unavailable)
         request = _parse(stage, meta, payload)
+        _check_sender(session, meta)
+        _check_live(session)
+        session.scope = scope = trio.CancelScope()
+        with scope:
+            return await self._run(session, stage, request, payload)
+        raise models.RequestError("unknown_session", "session released")
+
+    async def _run(self, session, stage, request, payload: bytes):
         async with session.lock:
             _check_live(session)
             if request.position != session.state.get("position", 0):
                 raise models.RequestError(
                     "bad_position", "position does not continue the session"
+                )
+            if request.step != session.state.get("step", 0):
+                raise models.RequestError(
+                    "bad_step", "step does not continue the session"
                 )
             caches = session.state.get("kv", {})
             extended, output = await trio.to_thread.run_sync(
@@ -56,23 +70,43 @@ class StageRunner:
             _check_live(session)
             session.state["kv"] = {**caches, **extended}
             session.state["position"] = request.position + request.seq
+            session.state["step"] = request.step + 1
         if isinstance(output, int):
-            return {"token_id": output}, b""
+            return {
+                "token_id": output,
+                "step": request.step,
+                "position": request.position,
+            }, b""
         next_hop = {
             "session_id": session.session_id,
             "target": "layer",
             "layer_idx": stage.stop,
             "position": request.position,
             "temperature": request.temperature,
+            "step": request.step,
+            "sender": session.route[session.index].peer,
             "shape": [1, request.seq, stage.cfg.hidden],
             "dtype": _DTYPE_NAMES[stage.dtype],
         }
-        return next_hop, output
+        return await relay.forward(session, next_hop, output), b""
 
 
 def _check_live(session: models.Session) -> None:
     if session.closed:
         raise models.RequestError("unknown_session", "session released")
+
+
+def _check_sender(session: models.Session, meta: dict) -> None:
+    """Activations are accepted only from the previous hop of the admitted route."""
+    if meta.get("target") != "layer":
+        return
+    if (
+        session.index == 0
+        or meta.get("sender") != session.route[session.index - 1].peer
+    ):
+        raise models.RequestError(
+            "bad_sender", "activations must come from the previous hop"
+        )
 
 
 def _bad(message: str) -> models.RequestError:
@@ -85,6 +119,9 @@ def _parse(stage: stage_lib.Stage, meta: dict, payload: bytes) -> models.Forward
     if type(position) is not int or position < 0:
         raise _bad("position must be a non-negative integer")
     temperature = _temperature(meta.get("temperature", 0.0))
+    step = meta.get("step")
+    if type(step) is not int or step < 0:
+        raise _bad("step must be a non-negative integer")
     target = meta.get("target")
     if target == "embedding":
         request = _parse_embedding(stage, meta, payload, position, temperature)
@@ -96,7 +133,7 @@ def _parse(stage: stage_lib.Stage, meta: dict, payload: bytes) -> models.Forward
         raise models.RequestError(
             "too_long", f"sequence exceeds {cfg.max_positions} positions"
         )
-    return request
+    return dataclasses.replace(request, step=step)
 
 
 def _parse_embedding(stage, meta, payload, position, temperature):
@@ -147,9 +184,13 @@ def _parse_layer(stage, meta, payload, position, temperature):
 def _temperature(value) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise _bad("temperature must be a number")
-    if not math.isfinite(value) or value < 0:
+    try:
+        converted = float(value)
+    except OverflowError:
+        converted = math.inf
+    if not math.isfinite(converted) or converted < 0:
         raise _bad("temperature must be finite and >= 0")
-    return float(value)
+    return converted
 
 
 def _step(stage, request: models.ForwardRequest, payload: bytes, caches: dict):

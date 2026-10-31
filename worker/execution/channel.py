@@ -22,3 +22,7 @@ class Channel:
     async def receive(self) -> models.Frame | None:
         async with self._receive_lock:
             return await wire.read_frame(self.stream)
+
+    def abort(self) -> None:
+        """Close the socket at once, failing any pending send or receive."""
+        self.stream.socket.close()

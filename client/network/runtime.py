@@ -9,9 +9,11 @@ import trio
 from client.network import models
 from client.utils import constants
 
+_ITEM, _ERROR, _END = "item", "error", "end"
+
 
 class TrioRuntime:
-    """Runs one trio loop in a thread; leased trio work is cancelled with its asyncio caller."""
+    """Runs one trio loop in a thread; streams of trio work are cancelled with their asyncio reader."""
 
     def __init__(self):
         self._thread: threading.Thread | None = None
@@ -37,22 +39,19 @@ class TrioRuntime:
     def spawn(self, function, *args) -> None:
         """Run a trio function in the background until the runtime stops."""
         try:
-            self._token.run_sync_soon(self._nursery.start_soon, function, *args)
+            self.call_soon(self._nursery.start_soon, function, *args)
         except trio.RunFinishedError:
             raise models.RouteError("the network service is not running") from None
 
-    @contextlib.asynccontextmanager
-    async def lease(self, factory):
-        """Enter a trio async context manager and hold it until this block ends or is cancelled."""
-        loop = asyncio.get_running_loop()
-        entered, finished = loop.create_future(), loop.create_future()
-        scope = trio.CancelScope()
-        self.spawn(self._hold, factory, loop, entered, finished, scope)
-        try:
-            value = await entered
-            yield value
-        finally:
-            await self._cancel(scope, finished)
+    def call_soon(self, function, *args) -> None:
+        """Run a plain function on the trio thread; raises trio.RunFinishedError once stopped."""
+        self._token.run_sync_soon(function, *args)
+
+    def stream(self, function, *args) -> "Stream":
+        """Start `function(emit, *args)` in trio; its emitted items are read through the Stream."""
+        stream = Stream(self)
+        self.spawn(stream.run, function, *args)
+        return stream
 
     async def _main(self) -> None:
         async with trio.open_nursery() as nursery:
@@ -61,36 +60,66 @@ class TrioRuntime:
             self._started.set()
             await trio.sleep_forever()
 
-    async def _hold(self, factory, loop, entered, finished, scope) -> None:
-        try:
-            with scope:
-                async with factory() as value:
-                    _settle(loop, entered, value)
-                    await trio.sleep_forever()
-        except Exception as error:
-            _settle(loop, entered, error=error)
-        finally:
-            _settle(loop, entered, error=models.RouteError("the request was cancelled"))
-            _settle(loop, finished)
 
-    async def _cancel(self, scope: trio.CancelScope, finished: asyncio.Future) -> None:
+class Stream:
+    """Asyncio reader of a trio producer, which stays a bounded number of items ahead."""
+
+    def __init__(self, runtime: TrioRuntime):
+        self._runtime = runtime
+        self._loop = asyncio.get_running_loop()
+        self._items: asyncio.Queue = asyncio.Queue()
+        self._credits = trio.Semaphore(constants.STREAM_BUFFER_ITEMS)
+        self._scope = trio.CancelScope()
+        self._finished = self._loop.create_future()
+
+    async def next(self):
+        """The next item; re-raises the producer's failure."""
+        kind, value = await self._items.get()
+        if kind == _ERROR:
+            raise value
+        if kind == _END:
+            raise models.GenerationError("generation ended without a result")
+        with contextlib.suppress(trio.RunFinishedError):
+            self._runtime.call_soon(self._credits.release)
+        return value
+
+    async def aclose(self) -> None:
+        """Cancel the producer now, then wait a bounded time for its cleanup. Idempotent."""
         try:
-            self._token.run_sync_soon(scope.cancel)
+            self._runtime.call_soon(self._scope.cancel)
         except trio.RunFinishedError:
             return
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(
-                asyncio.shield(finished), constants.CLEANUP_WAIT_SECONDS
+                asyncio.shield(self._finished), constants.CLEANUP_WAIT_SECONDS
             )
 
+    async def run(self, function, *args) -> None:
+        """Trio side: drive the producer, then report how it ended."""
+        try:
+            with self._scope:
+                await function(self._emit, *args)
+            self._put(_END, None)
+        except Exception as error:
+            self._put(_ERROR, error)
+        finally:
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(self._settle)
 
-def _settle(loop, future: asyncio.Future, value=None, error=None) -> None:
-    """Complete an asyncio future from the trio thread unless it is already done."""
+    async def _emit(self, item) -> None:
+        try:
+            with trio.fail_after(constants.STREAM_STALL_SECONDS):
+                await self._credits.acquire()
+        except trio.TooSlowError:
+            raise models.GenerationError(
+                "the client stopped reading the response"
+            ) from None
+        self._put(_ITEM, item)
 
-    with contextlib.suppress(RuntimeError):
-        loop.call_soon_threadsafe(_apply, future, value, error)
+    def _put(self, kind: str, value) -> None:
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._items.put_nowait, (kind, value))
 
-
-def _apply(future: asyncio.Future, value, error) -> None:
-    if not future.done():
-        future.set_exception(error) if error else future.set_result(value)
+    def _settle(self) -> None:
+        if not self._finished.done():
+            self._finished.set_result(None)

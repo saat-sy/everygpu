@@ -11,12 +11,18 @@ class SessionTable:
         self.capacity = capacity
         self._sessions: dict[str, models.Session] = {}
 
-    def admit(self, session_id: str, owner: int) -> models.Session:
+    def admit(
+        self,
+        session_id: str,
+        owner: int,
+        route: tuple[models.Hop, ...] = (),
+        index: int = 0,
+    ) -> models.Session:
         if session_id in self._sessions:
             raise models.RequestError("duplicate_session", "session already admitted")
         if len(self._sessions) >= self.capacity:
             raise models.RequestError("at_capacity", "no free session slot")
-        session = models.Session(session_id, owner)
+        session = models.Session(session_id, owner, route, index)
         self._sessions[session_id] = session
         return session
 
@@ -32,6 +38,11 @@ class SessionTable:
         session = self._sessions.pop(session_id, None)
         if session is not None:
             session.closed = True
+            if session.scope is not None:
+                session.scope.cancel()
+            link = session.state.get(constants.SESSION_LINK_KEY)
+            if link is not None:
+                link.abort()
             session.state.clear()
         return session is not None
 

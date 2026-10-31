@@ -1,5 +1,6 @@
 """Trio TCP execution server: request dispatch for ADMIT, FORWARD and RELEASE."""
 
+import dataclasses
 import itertools
 import sys
 import collections.abc
@@ -8,6 +9,7 @@ import trio
 
 from worker.execution import channel as channel_lib
 from worker.execution import models
+from worker.execution import route as route_lib
 from worker.execution import sessions as sessions_lib
 from worker.utils import constants
 
@@ -79,16 +81,17 @@ class ExecutionServer:
             raise models.RequestError("bad_request", "RESPONSE is not a request")
         session_id = _session_id(frame.meta)
         if frame.msg_type == constants.MSG_ADMIT:
-            self._check_identity(frame.meta)
-            self.sessions.admit(session_id, owner)
+            hops, index = route_lib.parse(frame.meta)
+            self._check_identity(frame.meta, hops[index])
+            self.sessions.admit(session_id, owner, hops, index)
             return {}, b""
         if frame.msg_type == constants.MSG_RELEASE:
             return {"released": self.sessions.release(session_id)}, b""
         session = self.sessions.get(session_id)
         return await self.forward(session, frame.meta, frame.payload)
 
-    def _check_identity(self, meta: dict) -> None:
-        """Refuse admission unless the sender expects exactly this executable stage."""
+    def _check_identity(self, meta: dict, own: models.Hop) -> None:
+        """Refuse admission unless the sender expects exactly this stage, at its own route slot."""
         if self.identity is None:
             return
         current = self.identity()
@@ -97,6 +100,13 @@ class ExecutionServer:
         if meta.get("expect") != current:
             raise models.RequestError(
                 "stale_stage", "pin, peer or stage differs from the expected one"
+            )
+        if (current["peer"], current["stage"]) != (
+            own.peer,
+            dataclasses.asdict(own.stage),
+        ):
+            raise models.RequestError(
+                "bad_route", "the route slot is not this worker's peer and stage"
             )
 
 

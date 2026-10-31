@@ -68,4 +68,6 @@ def _checkpoint(
         final[0].id,
         tuple(unit.id for unit in layer_units),
         tuple(tuple(unit.id for unit in group) for group in expert_units),
+        manifest.config,
+        manifest.assets,
     )

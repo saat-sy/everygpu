@@ -19,20 +19,22 @@ async def open_session(route: models.Route):
     """Admit a new session on every hop; release it all on exit, error or cancellation."""
     session = session_lib.Session(secrets.token_hex(constants.SESSION_ID_BYTES), route)
     try:
-        for hop in route.hops:
-            await _admit(session, hop)
+        for index, hop in enumerate(route.hops):
+            await _admit(session, hop, index)
         yield session
     finally:
         await session.release()
 
 
-async def _admit(session: session_lib.Session, hop: models.Hop) -> None:
+async def _admit(session: session_lib.Session, hop: models.Hop, index: int) -> None:
     route = session.route
     request = execution_models.Frame(
         worker_constants.MSG_ADMIT,
         {
             "session_id": session.session_id,
             "expect": identity.build(route.repo, route.revision, hop.peer, hop.stage),
+            "route": session.wire_route,
+            "index": index,
         },
     )
     try:
