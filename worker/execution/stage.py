@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from worker.execution import models
+from worker.execution import stage_models
 from worker.execution import olmoe
 
 _MIN_TEMPERATURE = 1e-6
@@ -30,6 +31,14 @@ class Stage:
         self.first = indices[0] if indices else 0 if self.has_embedding else cfg.layers
         self.stop = self.first + len(self.layers)
         self.completes = self.has_final and self.stop == cfg.layers
+        self.descriptor = models.StageDescriptor(
+            self.first,
+            self.stop,
+            cfg.layers,
+            cfg.experts,
+            self.has_embedding,
+            self.has_final,
+        )
         probe = self.layers[0].q if self.layers else self.embedding
         probe = self.lm_head if probe is None else probe
         self.dtype, self.device = probe.dtype, probe.device
@@ -81,7 +90,9 @@ def _check_topology(cfg: models.Config, indices, has_embedding, has_final) -> No
         )
 
 
-def _layer(cfg: models.Config, tensors: dict, weights: dict, i: int) -> models.Layer:
+def _layer(
+    cfg: models.Config, tensors: dict, weights: dict, i: int
+) -> stage_models.Layer:
     p = f"model.layers.{i}."
     missing = [e for e in range(cfg.experts) if f"expert:{i}:{e}" not in weights]
     if missing:
@@ -89,7 +100,7 @@ def _layer(cfg: models.Config, tensors: dict, weights: dict, i: int) -> models.L
             f"layer {i} lacks {len(missing)} of {cfg.experts} experts (first: {missing[:3]})"
         )
     try:
-        return models.Layer(
+        return stage_models.Layer(
             input_norm=tensors[p + "input_layernorm.weight"],
             q=tensors[p + "self_attn.q_proj.weight"],
             k=tensors[p + "self_attn.k_proj.weight"],

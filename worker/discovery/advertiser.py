@@ -1,5 +1,6 @@
 """Advertising: this worker's network pin, readiness status and piece provider records."""
 
+import dataclasses
 import json
 import time
 
@@ -20,6 +21,7 @@ class Advertiser:
         self.revision = revision
         self.ready = False
         self.execution: execution_models.Endpoint | None = None
+        self.stage: execution_models.StageDescriptor | None = None
 
     async def publish(self) -> None:
         """Store the network pin and, once ready, the ready status."""
@@ -69,6 +71,7 @@ class Advertiser:
             "ready": ready,
             "exec": self.execution
             and {"host": self.execution.host, "port": self.execution.port},
+            "stage": self.stage and dataclasses.asdict(self.stage),
             "expires": time.time() + constants.EXPIRATION_SECONDS,
             "seq": time.time_ns(),
         }

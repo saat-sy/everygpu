@@ -28,9 +28,11 @@ class ExecutionServer:
         self,
         sessions: sessions_lib.SessionTable,
         forward: ForwardHandler = unavailable_forward,
+        identity: collections.abc.Callable[[], dict] | None = None,
     ):
         self.sessions = sessions
         self.forward = forward
+        self.identity = identity
         self._owners = itertools.count()
 
     async def serve(
@@ -77,12 +79,25 @@ class ExecutionServer:
             raise models.RequestError("bad_request", "RESPONSE is not a request")
         session_id = _session_id(frame.meta)
         if frame.msg_type == constants.MSG_ADMIT:
+            self._check_identity(frame.meta)
             self.sessions.admit(session_id, owner)
             return {}, b""
         if frame.msg_type == constants.MSG_RELEASE:
             return {"released": self.sessions.release(session_id)}, b""
         session = self.sessions.get(session_id)
         return await self.forward(session, frame.meta, frame.payload)
+
+    def _check_identity(self, meta: dict) -> None:
+        """Refuse admission unless the sender expects exactly this executable stage."""
+        if self.identity is None:
+            return
+        current = self.identity()
+        if current["stage"] is None:
+            raise models.RequestError("unavailable", "no executable stage is resident")
+        if meta.get("expect") != current:
+            raise models.RequestError(
+                "stale_stage", "pin, peer or stage differs from the expected one"
+            )
 
 
 def _session_id(meta: dict) -> str:

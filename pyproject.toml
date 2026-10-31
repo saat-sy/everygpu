@@ -15,13 +15,19 @@ model-partitioner-outputs = [
     "transformers>=5.22",
     "accelerate>=1.16",
 ]
-worker = [
-    {include-group = "model-partitioner"},
+network = [
     # Exact pin: the worker sets a private KadDHT rate-limit attribute.
     "libp2p==0.8.1",
+    "trio",
+]
+worker = [
+    {include-group = "model-partitioner"},
+    {include-group = "network"},
 ]
 
 client = [
+    {include-group = "network"},
+    "huggingface_hub>=2.4",
     "starlette>=1.10",
     "uvicorn>=0.54",
 ]
@@ -32,4 +38,6 @@ dev = ["black"]
 package = false
 
 [tool.uv.dependency-groups]
+network = {requires-python = "<3.14"}
 worker = {requires-python = "<3.14"}
+client = {requires-python = "<3.14"}

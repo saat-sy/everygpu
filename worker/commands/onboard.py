@@ -44,6 +44,7 @@ async def run(
         runner.install(manifest.config, weights)
     except ValueError as error:
         print(f"warning: forward execution disabled: {error}", file=sys.stderr)
+    ads.stage = runner.descriptor()
     failed = await ads.announce_pieces(chosen)
     if failed:
         raise RuntimeError(

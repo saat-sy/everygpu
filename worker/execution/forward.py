@@ -34,6 +34,10 @@ class StageRunner:
             raise
         self.stage = stage
 
+    def descriptor(self) -> models.StageDescriptor | None:
+        """The stage this worker executes, or None while unavailable."""
+        return self.stage and self.stage.descriptor
+
     async def forward(self, session: models.Session, meta: dict, payload: bytes):
         stage = self.stage
         if stage is None:

@@ -12,6 +12,7 @@ from worker.discovery import discovery
 from worker.discovery import node
 from worker.execution import endpoint
 from worker.execution import forward
+from worker.execution import identity
 from worker.execution import server as execution_server
 from worker.execution import sessions
 from worker.loading import budget
@@ -40,7 +41,11 @@ async def run(args) -> int:
             async with trio.open_nursery() as nursery:
                 runner = forward.StageRunner()
                 executor = execution_server.ExecutionServer(
-                    sessions.SessionTable(), runner.forward
+                    sessions.SessionTable(),
+                    runner.forward,
+                    lambda: identity.build(
+                        repo, revision, str(dht.host.get_id()), runner.descriptor()
+                    ),
                 )
                 port = await nursery.start(
                     executor.serve, args.exec_host, args.exec_port

@@ -97,9 +97,10 @@ async def _fetch_ready_statuses(
         and status["expires"] > time.time()
         and (status["repo"], status["revision"]) == (repo, revision)
     ):
-        execution = status.get("exec")
+        execution, stage = status.get("exec"), status.get("stage")
         ready_statuses[peer] = models.PeerStatus(
             status["addrs"],
             execution
             and execution_models.Endpoint(execution["host"], execution["port"]),
+            stage and execution_models.StageDescriptor(**stage),
         )

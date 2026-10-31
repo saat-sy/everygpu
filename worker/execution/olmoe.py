@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from worker.execution import models
+from worker.execution import stage_models
 
 
 def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
@@ -31,7 +32,7 @@ def _rope(cfg: models.Config, position: int, length: int, like: torch.Tensor):
 
 
 def attention(
-    cfg: models.Config, w: models.Layer, x: torch.Tensor, position: int, cache
+    cfg: models.Config, w: stage_models.Layer, x: torch.Tensor, position: int, cache
 ):
     """Causal self-attention over [1, seq, hidden]; returns output and the extended (k, v)."""
     _, seq, _ = x.shape
@@ -59,7 +60,7 @@ def attention(
     return F.linear(out, w.o), (k, v)
 
 
-def moe(cfg: models.Config, w: models.Layer, x: torch.Tensor) -> torch.Tensor:
+def moe(cfg: models.Config, w: stage_models.Layer, x: torch.Tensor) -> torch.Tensor:
     """Top-k routed experts, all local; each expert output is scaled by its router weight."""
     flat = x.reshape(-1, cfg.hidden)
     logits = F.linear(flat, w.router)
@@ -80,7 +81,7 @@ def moe(cfg: models.Config, w: models.Layer, x: torch.Tensor) -> torch.Tensor:
 
 
 def decoder_layer(
-    cfg: models.Config, w: models.Layer, x: torch.Tensor, position: int, cache
+    cfg: models.Config, w: stage_models.Layer, x: torch.Tensor, position: int, cache
 ):
     attended, cache = attention(
         cfg, w, rms_norm(x, w.input_norm, cfg.eps), position, cache

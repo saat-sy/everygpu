@@ -2,7 +2,6 @@
 
 import dataclasses
 
-import torch
 import trio
 
 _DEFAULT_RMS_NORM_EPS = 1e-5
@@ -45,6 +44,18 @@ class Session:
     state: dict = dataclasses.field(default_factory=dict)
     closed: bool = False
     lock: trio.Lock = dataclasses.field(default_factory=trio.Lock)
+
+
+@dataclasses.dataclass(frozen=True)
+class StageDescriptor:
+    """The stage a worker executes: layers first..stop, with its embedding and final roles."""
+
+    first: int
+    stop: int
+    layers: int
+    experts: int
+    embedding: bool
+    final: bool
 
 
 class StageError(ValueError):
@@ -103,17 +114,3 @@ class Config:
             norm_topk=config["norm_topk_prob"],
             clip_qkv=config.get("clip_qkv"),
         )
-
-
-@dataclasses.dataclass(frozen=True)
-class Layer:
-    input_norm: torch.Tensor
-    q: torch.Tensor
-    k: torch.Tensor
-    v: torch.Tensor
-    o: torch.Tensor
-    q_norm: torch.Tensor
-    k_norm: torch.Tensor
-    post_norm: torch.Tensor
-    router: torch.Tensor
-    experts: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
