@@ -6,6 +6,7 @@ import time
 import trio
 from libp2p.kad_dht.kad_dht import KadDHT
 
+from worker.discovery import lookup
 from worker.discovery import models
 from worker.discovery import records
 from worker.execution import models as execution_models
@@ -13,12 +14,11 @@ from worker.utils import constants
 
 PeerStatuses = dict[str, models.PeerStatus]  # peer id -> ready status
 Coverage = dict[str, PeerStatuses]  # unit id -> its ready providers
-_PROGRESS_INTERVAL = 128
 
 
 async def read_network_pin(dht: KadDHT) -> tuple[str, str]:
     """The repo and revision this network pinned; never resolved locally."""
-    raw = await dht.get_value(constants.NETWORK_KEY)
+    raw = await lookup.get_value(dht, constants.NETWORK_KEY)
     try:
         records.RecordValidator().validate(constants.NETWORK_KEY, raw)
     except (TypeError, ValueError) as error:
@@ -36,16 +36,11 @@ async def find_coverage(
     keys = {records.piece_key(repo, revision, uid): uid for uid in unit_ids}
     limiter = trio.CapacityLimiter(constants.LOOKUP_CONCURRENCY)
     print(f"discovery: looking up providers for {len(keys)} units", flush=True)
-
-    providers: dict[str, set[str]] = {}
-    async with trio.open_nursery() as nursery:
-        for key in keys:
-            nursery.start_soon(_find_providers, dht, key, limiter, providers)
+    providers = await lookup.find_providers(dht, list(keys), limiter)
 
     # Each provider's status is fetched once, however many pieces it provides.
     print(
-        f"discovery: provider lookups complete; fetching "
-        f"{len(set().union(*providers.values()))} peer statuses",
+        f"discovery: fetching {len(set().union(*providers.values()))} peer statuses",
         flush=True,
     )
     ready_statuses: PeerStatuses = {}
@@ -71,19 +66,6 @@ async def find_coverage(
     }
 
 
-async def _find_providers(
-    dht: KadDHT,
-    key: str,
-    limiter: trio.CapacityLimiter,
-    providers: dict[str, set[str]],
-) -> None:
-    async with limiter:
-        infos = await dht.find_providers(key, constants.PROVIDER_LOOKUP_COUNT)
-    providers[key] = {str(info.peer_id) for info in infos}
-    if len(providers) % _PROGRESS_INTERVAL == 0:
-        print(f"discovery: {len(providers)} provider lookups completed", flush=True)
-
-
 async def _fetch_ready_statuses(
     dht: KadDHT,
     repo: str,
@@ -95,7 +77,7 @@ async def _fetch_ready_statuses(
     """Record the peer's status only if it is ready, unexpired and on this revision."""
     key = records.peer_key(peer)
     async with limiter:
-        raw = await dht.get_value(key)
+        raw = await lookup.get_value(dht, key)
     try:
         records.RecordValidator().validate(key, raw)
     except (TypeError, ValueError):
