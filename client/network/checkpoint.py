@@ -15,12 +15,16 @@ Cache = dict[tuple[str, str], models.Checkpoint]
 
 async def load(dht: KadDHT, cache: Cache) -> models.Checkpoint:
     """The checkpoint the network pinned; a pin's manifest is fetched once."""
+    print("discovery: fetching network pin from DHT", flush=True)
     repo, revision = await discovery.read_network_pin(dht)
+    print(f"discovery: network pin {repo} @ {revision}", flush=True)
     if (repo, revision) not in cache:
+        print("discovery: downloading pinned manifest", flush=True)
         manifest = await trio.to_thread.run_sync(
             manifest_loading.fetch_manifest, repo, revision, abandon_on_cancel=True
         )
         cache[(repo, revision)] = _checkpoint(repo, revision, manifest)
+    print("discovery: checkpoint ready", flush=True)
     return cache[(repo, revision)]
 
 

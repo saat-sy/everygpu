@@ -108,14 +108,24 @@ class Service:
         dht = self._dht
         if dht is None:
             raise models.RouteError(f"not connected to the network ({self._error})")
+        phase = "checkpoint lookup"
         try:
             async with self._lookup:
                 with trio.fail_after(constants.DISCOVERY_TIMEOUT_SECONDS):
                     discovery.forget_cached(dht)
+                    print("discovery: reading checkpoint", flush=True)
                     pinned = await checkpoint.load(dht, self._checkpoints)
+                    phase = "worker provider lookup"
+                    print("discovery: finding executable workers", flush=True)
                     hops = await discovery.find_hops(dht, pinned)
+                    print(
+                        f"discovery: found {len(hops)} executable workers", flush=True
+                    )
         except trio.TooSlowError:
-            raise models.RouteError("network discovery timed out") from None
+            raise models.RouteError(
+                f"network discovery timed out during {phase} "
+                f"after {constants.DISCOVERY_TIMEOUT_SECONDS}s"
+            ) from None
         except models.RouteError:
             raise
         except Exception as error:
