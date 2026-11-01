@@ -6,6 +6,7 @@ from model_partitioner.utils import constants as partitioner_constants
 from worker.discovery import discovery
 from worker.discovery import node
 from worker.loading import manifest as manifest_loading
+from worker.placement import coverage
 from worker.placement import order
 from worker.placement import summary
 
@@ -19,18 +20,27 @@ async def run(args) -> int:
         )
         unit_ids = order.model_order(manifest)
         found = await discovery.find_coverage(dht, repo, revision, unit_ids)
+    groups = order.model_groups(manifest)
+    executable = coverage.group_copies(
+        coverage.executable_spans(groups, found), len(groups)
+    )
     missing = [unit_id for unit_id in unit_ids if not found[unit_id]]
     print(f"covered: {len(unit_ids) - len(missing)}/{len(unit_ids)} units")
+    print(
+        f"executable: {sum(map(bool, executable))}/{len(groups)} embedding, layer and final groups"
+    )
     if missing:
         print("not found in the DHT now:")
         print("  " + "\n  ".join(summary.describe(manifest, set(missing))))
     workers: dict[str, list[str]] = {}
-    addrs: dict[str, list[str]] = {}
+    statuses = {}
     for unit_id in unit_ids:
-        for peer, peer_addrs in found[unit_id].items():
+        for peer, status in found[unit_id].items():
             workers.setdefault(peer, []).append(unit_id)
-            addrs[peer] = peer_addrs
+            statuses[peer] = status
     for peer, served in workers.items():
-        print(f"worker {peer} ({len(served)} units) at {', '.join(addrs[peer])}")
+        status = statuses[peer]
+        print(f"worker {peer} ({len(served)} units) at {', '.join(status.addrs)}")
+        print(f"  execution endpoint: {status.execution or 'not advertised'}")
         print("  " + "\n  ".join(summary.describe(manifest, set(served))))
     return partitioner_constants.EXIT_OK

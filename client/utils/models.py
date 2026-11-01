@@ -1,5 +1,7 @@
 """Data structures for client request failures."""
 
+import dataclasses
+
 from client.utils import constants
 
 
@@ -23,3 +25,13 @@ class ApiError(Exception):
         self.code = code
         self.error_type = error_type
         self.headers = headers
+
+
+@dataclasses.dataclass(frozen=True)
+class ChatRequest:
+    """A validated chat completion request."""
+
+    messages: list[dict]
+    stream: bool
+    max_tokens: int
+    temperature: float

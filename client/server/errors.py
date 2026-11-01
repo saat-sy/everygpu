@@ -8,11 +8,9 @@ from client.utils import constants
 from client.utils import models
 
 
-async def api_error_response(
-    request: requests.Request, exc: models.ApiError
-) -> responses.JSONResponse:
-    """Render an ApiError as an OpenAI error object."""
-    body = {
+def error_body(exc: models.ApiError) -> dict:
+    """The OpenAI error object for an ApiError."""
+    return {
         "error": {
             "message": exc.message,
             "type": exc.error_type,
@@ -20,7 +18,15 @@ async def api_error_response(
             "code": exc.code,
         }
     }
-    return responses.JSONResponse(body, status_code=exc.status, headers=exc.headers)
+
+
+async def api_error_response(
+    request: requests.Request, exc: models.ApiError
+) -> responses.JSONResponse:
+    """Render an ApiError as an OpenAI error response."""
+    return responses.JSONResponse(
+        error_body(exc), status_code=exc.status, headers=exc.headers
+    )
 
 
 async def http_error_response(

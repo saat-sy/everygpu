@@ -1,5 +1,6 @@
 """Advertising: this worker's network pin, readiness status and piece provider records."""
 
+import dataclasses
 import json
 import time
 
@@ -7,6 +8,7 @@ import trio
 from libp2p.kad_dht.kad_dht import KadDHT
 
 from worker.discovery import records
+from worker.execution import models as execution_models
 from worker.utils import constants
 
 
@@ -18,6 +20,8 @@ class Advertiser:
         self.repo = repo
         self.revision = revision
         self.ready = False
+        self.execution: execution_models.Endpoint | None = None
+        self.stage: execution_models.StageDescriptor | None = None
 
     async def publish(self) -> None:
         """Store the network pin and, once ready, the ready status."""
@@ -65,6 +69,9 @@ class Advertiser:
             "revision": self.revision,
             "addrs": [str(address) for address in self.dht.host.get_addrs()],
             "ready": ready,
+            "exec": self.execution
+            and {"host": self.execution.host, "port": self.execution.port},
+            "stage": self.stage and dataclasses.asdict(self.stage),
             "expires": time.time() + constants.EXPIRATION_SECONDS,
             "seq": time.time_ns(),
         }
