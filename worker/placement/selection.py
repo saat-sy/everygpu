@@ -1,32 +1,39 @@
-"""Placement policy: which units to load given coverage and a byte budget."""
+"""Placement policy: the stage to load, aligned with the executable stages already advertised."""
 
 
 def choose(
     groups: list[list[str]],
     sizes: dict[str, int],
-    copies: dict[str, int],
+    spans: list[tuple[int, int]],
     budget: int,
 ) -> list[str]:
-    """Missing whole groups first, then other missing units; scarcest copies once covered."""
-    order = [unit_id for group in groups for unit_id in group]
-    chosen: list[str] = []
-    left = budget
-    for group in groups:
-        if not any(copies.get(u) for u in group):
-            if sum(sizes[u] for u in group) <= left:
-                left = _take(group, sizes, chosen, left)
-    left = _take([u for u in order if not copies.get(u)], sizes, chosen, left)
-    if all(copies.get(u) or u in chosen for u in order):
-        rank = {unit_id: i for i, unit_id in enumerate(order)}
-        scarcest = sorted(order, key=lambda u: (copies.get(u, 0), rank[u]))
-        _take(scarcest, sizes, chosen, left)
-    return chosen
+    """Units of a run of uncovered groups, else of the scarcest advertised stage that fits."""
+    weights = [sum(sizes[unit_id] for unit_id in group) for group in groups]
+    copies = [sum(a <= i < b for a, b in spans) for i in range(len(groups))]
+    if 0 in copies:
+        best = _widest_uncovered_run(copies, weights, budget)
+        if best is None:
+            raise ValueError(
+                f"weight budget {budget:,} bytes cannot hold the smallest uncovered "
+                f"stage component; raise --max-vram or use a larger GPU"
+            )
+    else:
+        fitting = [s for s in set(spans) if sum(weights[s[0] : s[1]]) <= budget]
+        if not fitting:
+            raise ValueError(
+                f"every group is covered and weight budget {budget:,} bytes fits "
+                "no advertised stage to replicate"
+            )
+        best = min(fitting, key=lambda s: (sum(copies[s[0] : s[1]]), s))
+    return [unit_id for group in groups[best[0] : best[1]] for unit_id in group]
 
 
-def _take(candidates: list[str], sizes: dict[str, int], chosen: list, left: int) -> int:
-    """Append each unchosen candidate that still fits; return the bytes left."""
-    for unit_id in candidates:
-        if unit_id not in chosen and sizes[unit_id] <= left:
-            chosen.append(unit_id)
-            left -= sizes[unit_id]
-    return left
+def _widest_uncovered_run(copies, weights, budget) -> tuple[int, int] | None:
+    best = None
+    for first in range(len(copies)):
+        for stop in range(first + 1, len(copies) + 1):
+            if copies[stop - 1] or sum(weights[first:stop]) > budget:
+                break
+            if best is None or stop - first > best[1] - best[0]:
+                best = (first, stop)
+    return best
