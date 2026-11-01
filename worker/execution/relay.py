@@ -1,11 +1,16 @@
 """Relays a stage's activations to the next route hop over a persistent per-session connection."""
 
+import logging
+import time
+
 import trio
 
+from monitoring.logging import logger as log_utils
 from worker.execution import channel as channel_lib
 from worker.execution import models
 from worker.utils import constants
 
+logger = logging.getLogger(__name__)
 _CONNECTION_ERRORS = (
     OSError,
     trio.BrokenResourceError,
@@ -19,6 +24,7 @@ async def forward(session: models.Session, meta: dict, payload: bytes) -> dict:
     hop = session.route[session.index + 1]
     link = session.state.get(constants.SESSION_LINK_KEY)
     sent = False
+    started = time.monotonic()
     try:
         with trio.fail_after(constants.RELAY_TIMEOUT_SECONDS):
             if link is None:
@@ -34,6 +40,12 @@ async def forward(session: models.Session, meta: dict, payload: bytes) -> dict:
         if not sent and link is not None:
             link.abort()
             session.state.pop(constants.SESSION_LINK_KEY, None)
+    logger.debug(
+        "relayed step=%s peer=%s elapsed_ms=%d",
+        meta["step"],
+        hop.peer,
+        log_utils.elapsed_ms(started),
+    )
     return _reply(hop, response, meta["step"])
 
 
@@ -41,6 +53,7 @@ async def _dial(session: models.Session, hop: models.Hop) -> channel_lib.Channel
     with trio.fail_after(constants.RELAY_DIAL_TIMEOUT_SECONDS):
         stream = await trio.open_tcp_stream(hop.endpoint.host, hop.endpoint.port)
     link = channel_lib.Channel(stream)
+    logger.debug("relay connection opened peer=%s endpoint=%s", hop.peer, hop.endpoint)
     if session.closed:
         link.abort()
         raise models.RequestError("unknown_session", "session released")
@@ -63,4 +76,8 @@ def _reply(hop: models.Hop, response: models.Frame | None, step: int) -> dict:
 
 
 def _failed(code: str, hop: models.Hop, detail: str) -> models.RequestError:
+    """The downstream failure as a request error, logged as degraded operation."""
+    logger.warning(
+        "downstream failed peer=%s code=%s detail=%s", hop.peer, code, detail
+    )
     return models.RequestError(code, f"worker {hop.peer} at {hop.endpoint}: {detail}")

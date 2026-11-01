@@ -1,5 +1,7 @@
 """An admitted session: its route and the worker connections held for its lifetime."""
 
+import logging
+
 import trio
 
 from client.network import models
@@ -8,6 +10,8 @@ from worker.execution import channel as channel_lib
 from worker.execution import models as execution_models
 from worker.execution import route as route_lib
 from worker.utils import constants as worker_constants
+
+logger = logging.getLogger(__name__)
 
 CONNECTION_ERRORS = (
     OSError,
@@ -33,10 +37,15 @@ class Session:
         A fresh connection never queues behind an in-flight step on the owner connection.
         """
         with trio.CancelScope(shield=True):
-            with trio.move_on_after(constants.RELEASE_TIMEOUT_SECONDS):
+            with trio.move_on_after(constants.RELEASE_TIMEOUT_SECONDS) as scope:
                 async with trio.open_nursery() as nursery:
                     for hop in self.route.hops[: len(self.channels)]:
                         nursery.start_soon(self._release_one, hop)
+            if scope.cancelled_caught:
+                logger.warning(
+                    "session release timed out after %ds",
+                    constants.RELEASE_TIMEOUT_SECONDS,
+                )
             for channel in self.opened:
                 channel.abort()
         self.channels.clear()
@@ -54,5 +63,6 @@ class Session:
                 await channel.receive()
             finally:
                 channel.abort()
-        except CONNECTION_ERRORS:
-            pass
+            logger.debug("session released peer=%s", hop.peer)
+        except CONNECTION_ERRORS as error:
+            logger.warning("session release failed peer=%s error=%s", hop.peer, error)

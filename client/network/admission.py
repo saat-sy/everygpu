@@ -1,29 +1,41 @@
 """Route admission: dial each hop in order, admit the session, roll back on any failure."""
 
 import contextlib
+import logging
 import secrets
+import time
 
 import trio
 
 from client.network import models
 from client.network import session as session_lib
 from client.utils import constants
+from monitoring.logging import logger as log_utils
 from worker.execution import channel as channel_lib
 from worker.execution import identity
 from worker.execution import models as execution_models
 from worker.utils import constants as worker_constants
+
+logger = logging.getLogger(__name__)
 
 
 @contextlib.asynccontextmanager
 async def open_session(route: models.Route):
     """Admit a new session on every hop; release it all on exit, error or cancellation."""
     session = session_lib.Session(secrets.token_hex(constants.SESSION_ID_BYTES), route)
-    try:
-        for index, hop in enumerate(route.hops):
-            await _admit(session, hop, index)
-        yield session
-    finally:
-        await session.release()
+    started = time.monotonic()
+    with log_utils.bind(session_id=session.session_id):
+        try:
+            for index, hop in enumerate(route.hops):
+                await _admit(session, hop, index)
+            logger.info(
+                "route admitted hops=%d elapsed_ms=%d",
+                len(route.hops),
+                log_utils.elapsed_ms(started),
+            )
+            yield session
+        finally:
+            await session.release()
 
 
 async def _admit(session: session_lib.Session, hop: models.Hop, index: int) -> None:
@@ -37,6 +49,7 @@ async def _admit(session: session_lib.Session, hop: models.Hop, index: int) -> N
             "index": index,
         },
     )
+    started = time.monotonic()
     try:
         with trio.fail_after(constants.DIAL_TIMEOUT_SECONDS):
             stream = await trio.open_tcp_stream(hop.endpoint.host, hop.endpoint.port)
@@ -63,3 +76,10 @@ async def _admit(session: session_lib.Session, hop: models.Hop, index: int) -> N
         )
         raise models.RouteError(f"worker {hop.peer} refused admission ({detail})")
     session.channels.append(channel)
+    logger.debug(
+        "worker admitted peer=%s stage=%d index=%d elapsed_ms=%d",
+        hop.peer,
+        hop.stage.first,
+        index,
+        log_utils.elapsed_ms(started),
+    )

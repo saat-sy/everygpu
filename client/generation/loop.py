@@ -1,6 +1,8 @@
 """The generation loop: one prefill, then cached single-token decode steps through the route."""
 
 import collections.abc
+import logging
+import time
 
 import trio
 
@@ -8,8 +10,11 @@ from client.generation import text
 from client.network import models as network_models
 from client.network import session as session_lib
 from client.utils import constants
+from monitoring.logging import logger as log_utils
 from worker.execution import models as execution_models
 from worker.utils import constants as worker_constants
+
+logger = logging.getLogger(__name__)
 
 
 async def run(
@@ -23,9 +28,22 @@ async def run(
     detokenizer: text.Detokenizer,
 ) -> tuple[str, int]:
     """Generate up to `budget` tokens, emitting each non-EOS delta. Returns the finish reason and sampled count."""
+    started = time.monotonic()
     ids, position = prompt, 0
     for step in range(budget):
+        step_started = time.monotonic()
         token = await _step(session, ids, position, step, temperature, vocab)
+        logger.debug(
+            "step done step=%d tokens_in=%d position=%d elapsed_ms=%d",
+            step,
+            len(ids),
+            position,
+            log_utils.elapsed_ms(step_started),
+        )
+        if step == 0:
+            logger.info(
+                "first token generated elapsed_ms=%d", log_utils.elapsed_ms(started)
+            )
         position += len(ids)
         if token in eos:
             return constants.FINISH_STOP, step + 1

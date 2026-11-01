@@ -1,8 +1,8 @@
 """Checks original and reassembled models give equivalent outputs."""
 
 import gc
+import logging
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
@@ -12,6 +12,8 @@ import transformers
 from model_partitioner.utils import constants, models
 from model_partitioner.artifact import hub, loader
 from model_partitioner.partition import adapters
+
+logger = logging.getLogger(__name__)
 
 
 def _dtype(adapter: adapters.Adapter, config: dict):
@@ -101,9 +103,7 @@ def check_outputs(
             scratch = _scratch_dir(artifact_dir, needed)
         except (ValueError, OSError) as error:
             return _unverified(str(error))
-        print(
-            f"scratch: {scratch} (about {needed:,} bytes)", file=sys.stderr, flush=True
-        )
+        logger.info("scratch directory=%s bytes=%d", scratch, needed)
         try:
             return _compare(artifact, source_dir, adapter, options, scratch)
         finally:
@@ -125,9 +125,14 @@ def _compare(
         (constants.OUTPUT_CHECK_BATCH, constants.OUTPUT_CHECK_SEQ_LEN),
         generator=generator,
     )
+    logger.info(
+        "computing reference logits device=%s", options.device_map or options.device
+    )
     reference = _logits(source_dir, adapter, config, ids, options)
     reassembled_dir = scratch / "reassembled"
+    logger.info("exporting reassembled checkpoint")
     artifact.export_checkpoint(reassembled_dir)
+    logger.info("computing reassembled logits")
     candidate = _logits(reassembled_dir, adapter, config, ids, options)
     diff = (reference - candidate).abs().max().item()
     close = torch.allclose(

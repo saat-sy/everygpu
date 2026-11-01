@@ -1,6 +1,7 @@
 """Discovery: read the network pin and look up which ready peers provide which pieces."""
 
 import json
+import logging
 import time
 
 import trio
@@ -12,6 +13,7 @@ from worker.discovery import records
 from worker.execution import models as execution_models
 from worker.utils import constants
 
+logger = logging.getLogger(__name__)
 PeerStatuses = dict[str, models.PeerStatus]  # peer id -> ready status
 Coverage = dict[str, PeerStatuses]  # unit id -> its ready providers
 
@@ -35,17 +37,15 @@ async def find_coverage(
     """Providers of each unit whose status is ready, unexpired and on this revision."""
     keys = {records.piece_key(repo, revision, uid): uid for uid in unit_ids}
     limiter = trio.CapacityLimiter(constants.LOOKUP_CONCURRENCY)
-    print(f"discovery: looking up providers for {len(keys)} units", flush=True)
+    logger.debug("looking up providers units=%d", len(keys))
     providers = await lookup.find_providers(dht, list(keys), limiter)
 
     # Each provider's status is fetched once, however many pieces it provides.
-    print(
-        f"discovery: fetching {len(set().union(*providers.values()))} peer statuses",
-        flush=True,
-    )
+    peers = set().union(*providers.values())
+    logger.debug("fetching peer statuses peers=%d", len(peers))
     ready_statuses: PeerStatuses = {}
     async with trio.open_nursery() as nursery:
-        for peer in set().union(*providers.values()):
+        for peer in peers:
             nursery.start_soon(
                 _fetch_ready_statuses,
                 dht,
@@ -81,6 +81,7 @@ async def _fetch_ready_statuses(
     try:
         records.RecordValidator().validate(key, raw)
     except (TypeError, ValueError):
+        logger.debug("peer status missing or invalid peer=%s", peer)
         return
     status = json.loads(raw)
     if (
@@ -95,3 +96,5 @@ async def _fetch_ready_statuses(
             and execution_models.Endpoint(execution["host"], execution["port"]),
             stage and execution_models.StageDescriptor(**stage),
         )
+    else:
+        logger.debug("peer status not ready, expired or on another pin peer=%s", peer)

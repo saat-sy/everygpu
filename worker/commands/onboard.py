@@ -1,7 +1,11 @@
 """Onboarding: choose, load and announce the pieces this worker will serve."""
 
+import logging
+import time
+
 import trio
 
+from monitoring.logging import logger as log_utils
 from worker.discovery import advertiser
 from worker.discovery import discovery
 from worker.execution import forward
@@ -11,6 +15,8 @@ from worker.placement import coverage
 from worker.placement import order
 from worker.placement import selection
 from worker.placement import summary
+
+logger = logging.getLogger(__name__)
 
 
 async def run(
@@ -26,20 +32,26 @@ async def run(
     found = await discovery.find_coverage(dht, repo, revision, unit_ids)
     spans = coverage.executable_spans(groups, found)
     copies = coverage.group_copies(spans, len(groups))
-    print(
-        f"discovered executable coverage: {sum(map(bool, copies))}/{len(groups)} "
-        "embedding, layer and final groups"
+    logger.info(
+        "coverage discovered executable_groups=%d/%d",
+        sum(map(bool, copies)),
+        len(groups),
     )
     chosen = selection.choose(
         groups, order.unit_bytes(manifest), list(spans.values()), weight_budget
     )
-    print(f"selected {len(chosen)} units:")
-    print("  " + "\n  ".join(summary.describe(manifest, set(chosen))))
+    logger.info("placement selected units=%d of %d", len(chosen), len(unit_ids))
+    for line in summary.describe(manifest, set(chosen)):
+        logger.debug("placement %s", line)
+    started = time.monotonic()
     weights = await trio.to_thread.run_sync(
         resident.load, repo, revision, manifest, chosen, abandon_on_cancel=True
     )
-    print(
-        f"resident: {sum(t.nbytes for u in weights.values() for t in u.values()):,} bytes"
+    logger.info(
+        "weights resident units=%d bytes=%d elapsed_ms=%d",
+        len(weights),
+        sum(t.nbytes for u in weights.values() for t in u.values()),
+        log_utils.elapsed_ms(started),
     )
     try:
         runner.install(manifest.config, weights)
@@ -48,11 +60,24 @@ async def run(
             f"selected pieces form no executable stage: {error}"
         ) from error
     ads.stage = runner.descriptor()
+    logger.info(
+        "stage installed layers=%d-%d embedding=%s final=%s",
+        ads.stage.first,
+        ads.stage.stop,
+        ads.stage.embedding,
+        ads.stage.final,
+    )
+    started = time.monotonic()
     failed = await ads.announce_pieces(chosen)
     if failed:
         raise RuntimeError(
             f"{len(failed)} of {len(chosen)} piece announcements not sent"
         )
+    logger.info(
+        "pieces announced units=%d elapsed_ms=%d",
+        len(chosen),
+        log_utils.elapsed_ms(started),
+    )
     ads.ready = True
     await ads.publish()
     return weights

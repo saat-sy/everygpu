@@ -35,3 +35,18 @@ class ChatRequest:
     stream: bool
     max_tokens: int
     temperature: float
+
+
+@dataclasses.dataclass
+class Exchange:
+    """One chat request's identity and outcome so far, logged once when it ends."""
+
+    request_id: str
+    started: float
+    status: int = 200
+    outcome: str = constants.OUTCOME_COMPLETED
+    streaming: bool = False
+    chunks: int = 0
+    completion_tokens: int | None = None
+    error: str = ""
+    exc: BaseException | None = None

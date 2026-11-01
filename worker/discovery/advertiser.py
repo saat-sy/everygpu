@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import logging
 import time
 
 import trio
@@ -10,6 +11,8 @@ from libp2p.kad_dht.kad_dht import KadDHT
 from worker.discovery import records
 from worker.execution import models as execution_models
 from worker.utils import constants
+
+logger = logging.getLogger(__name__)
 
 
 class Advertiser:
@@ -52,7 +55,7 @@ class Advertiser:
             try:
                 await self.publish()
             except Exception as error:
-                print(f"warning: discovery degraded: {error}")
+                logger.warning("discovery degraded: %s", error)
 
     async def withdraw(self) -> None:
         self.ready = False
@@ -62,6 +65,7 @@ class Advertiser:
         pin = {"repo": self.repo, "revision": self.revision}
         value = json.dumps(pin, sort_keys=True)
         await self.dht.put_value(constants.NETWORK_KEY, value.encode())
+        logger.debug("published network pin")
 
     async def _publish_peer_status(self, ready: bool) -> None:
         status = {
@@ -77,6 +81,7 @@ class Advertiser:
         }
         key = records.peer_key(str(self.dht.host.get_id()))
         await self.dht.put_value(key, json.dumps(status).encode())
+        logger.debug("published peer status ready=%s", ready)
 
     async def _announce_piece(
         self, key: str, limiter: trio.CapacityLimiter, reached_peer: dict[str, bool]

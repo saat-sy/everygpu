@@ -1,12 +1,16 @@
 """Verifies a partitioned artifact against its manifest and the source checkpoint."""
 
+import logging
 from pathlib import Path
 
 from safetensors import safe_open
 
+from monitoring.logging import logger as log_utils
 from model_partitioner.utils import constants, models, tensor_utils
 from model_partitioner.artifact import hub, loader
 from model_partitioner.partition import source
+
+logger = logging.getLogger(__name__)
 
 RECONSTRUCTION = "exact tensor reconstruction"
 
@@ -23,6 +27,7 @@ def _skipped(name: str, reason: str) -> models.CheckResult:
 
 
 def check_files(artifact: loader.Artifact) -> models.CheckResult:
+    logger.info("checking file checksums")
     problems = []
     for name, info in loader.declared_files(artifact.manifest).items():
         path = artifact.root / name
@@ -87,6 +92,7 @@ def _shard_headers(artifact: loader.Artifact) -> list[str]:
 def check_coverage(
     artifact: loader.Artifact, specs: list[models.TensorSpec]
 ) -> models.CheckResult:
+    logger.info("checking coverage tensors=%d", len(specs))
     manifest = artifact.manifest
     problems = _manifest_relations(manifest)
     by_key = {spec.key: spec for spec in specs}
@@ -112,8 +118,11 @@ def check_coverage(
 def check_reconstruction(
     artifact: loader.Artifact, src: source.LocalSource, specs: list[models.TensorSpec]
 ) -> models.CheckResult:
+    logger.info("checking exact reconstruction tensors=%d", len(specs))
     problems = []
-    for spec in specs:
+    for done, spec in enumerate(specs, 1):
+        if log_utils.progress_due(done, len(specs)):
+            logger.info("reconstruction progress tensors=%d/%d", done, len(specs))
         try:
             rebuilt = artifact.tensor(spec.key)
         except (models.ChecksumMismatch, ValueError, KeyError) as error:

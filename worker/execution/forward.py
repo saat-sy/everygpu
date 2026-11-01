@@ -1,16 +1,20 @@
 """FORWARD handler: validates, runs this worker's stage off the event loop, commits session caches."""
 
 import dataclasses
+import logging
 import math
+import time
 import types
 
 import torch
 import trio
 
+from monitoring.logging import logger as log_utils
 from worker.execution import models
 from worker.execution import relay
 from worker.execution import stage as stage_lib
 
+logger = logging.getLogger(__name__)
 _DTYPES = types.MappingProxyType(
     {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 )
@@ -64,8 +68,18 @@ class StageRunner:
                     "bad_step", "step does not continue the session"
                 )
             caches = session.state.get("kv", {})
+            started = time.monotonic()
             extended, output = await trio.to_thread.run_sync(
                 _step, stage, request, payload, caches, limiter=self._device
+            )
+            logger.debug(
+                "stage computed step=%d position=%d seq=%d layers=%d-%d elapsed_ms=%d",
+                request.step,
+                request.position,
+                request.seq,
+                stage.first,
+                stage.stop,
+                log_utils.elapsed_ms(started),
             )
             _check_live(session)
             session.state["kv"] = {**caches, **extended}

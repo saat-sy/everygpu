@@ -2,16 +2,19 @@
 
 import dataclasses
 import itertools
-import sys
+import logging
 import collections.abc
 
 import trio
 
+from monitoring.logging import logger as log_utils
 from worker.execution import channel as channel_lib
 from worker.execution import models
 from worker.execution import route as route_lib
 from worker.execution import sessions as sessions_lib
 from worker.utils import constants
+
+logger = logging.getLogger(__name__)
 
 ForwardHandler = collections.abc.Callable[
     [models.Session, dict, bytes],
@@ -48,11 +51,13 @@ class ExecutionServer:
     async def _serve_connection(self, stream: trio.SocketStream) -> None:
         channel = channel_lib.Channel(stream)
         owner = next(self._owners)
+        logger.debug("connection opened owner=%d", owner)
         try:
             while True:
                 try:
                     frame = await channel.receive()
                 except models.ProtocolError as error:
+                    logger.warning("malformed frame owner=%d error=%s", owner, error)
                     await channel.send(_error("malformed_frame", str(error)))
                     return
                 if frame is None:
@@ -60,10 +65,13 @@ class ExecutionServer:
                 await channel.send(await self._respond(frame, owner))
         except (trio.BrokenResourceError, trio.ClosedResourceError):
             pass
-        except Exception as error:
-            print(f"warning: execution connection failed: {error}", file=sys.stderr)
+        except Exception:
+            logger.exception("execution connection failed owner=%d", owner)
         finally:
-            self.sessions.release_owned(owner)
+            released = self.sessions.release_owned(owner)
+            logger.debug(
+                "connection closed owner=%d sessions_released=%d", owner, released
+            )
             await stream.aclose()
 
     async def _respond(self, frame: models.Frame, owner: int) -> models.Frame:
@@ -71,8 +79,7 @@ class ExecutionServer:
             meta, payload = await self._dispatch(frame, owner)
         except models.RequestError as error:
             return _error(error.code, error.message)
-        except Exception as error:
-            print(f"warning: execution request failed: {error!r}", file=sys.stderr)
+        except Exception:
             return _error("internal", "request failed")
         return models.Frame(constants.MSG_RESPONSE, {"status": "ok", **meta}, payload)
 
@@ -80,13 +87,44 @@ class ExecutionServer:
         if frame.msg_type == constants.MSG_RESPONSE:
             raise models.RequestError("bad_request", "RESPONSE is not a request")
         session_id = _session_id(frame.meta)
+        with log_utils.bind(session_id=session_id):
+            try:
+                return await self._handle(frame, session_id, owner)
+            except models.RequestError as error:
+                admitting = frame.msg_type == constants.MSG_ADMIT
+                logger.log(
+                    logging.WARNING if admitting else logging.DEBUG,
+                    "request refused type=%d code=%s",
+                    frame.msg_type,
+                    error.code,
+                )
+                raise
+            except Exception:
+                logger.exception("execution request failed type=%d", frame.msg_type)
+                raise
+
+    async def _handle(
+        self, frame: models.Frame, session_id: str, owner: int
+    ) -> tuple[dict, bytes]:
         if frame.msg_type == constants.MSG_ADMIT:
             hops, index = route_lib.parse(frame.meta)
             self._check_identity(frame.meta, hops[index])
             self.sessions.admit(session_id, owner, hops, index)
+            stage = hops[index].stage
+            logger.debug(
+                "session admitted layers=%d-%d index=%d active=%d",
+                stage.first,
+                stage.stop,
+                index,
+                len(self.sessions),
+            )
             return {}, b""
         if frame.msg_type == constants.MSG_RELEASE:
-            return {"released": self.sessions.release(session_id)}, b""
+            released = self.sessions.release(session_id)
+            logger.debug(
+                "session released found=%s active=%d", released, len(self.sessions)
+            )
+            return {"released": released}, b""
         session = self.sessions.get(session_id)
         return await self.forward(session, frame.meta, frame.payload)
 

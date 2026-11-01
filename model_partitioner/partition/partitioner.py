@@ -1,14 +1,18 @@
 """Plans units from tensor specs and writes Safetensors partitions plus manifest."""
 
 import json
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
 
 from safetensors.torch import save_file
 
+from monitoring.logging import logger as log_utils
 from model_partitioner.utils import constants, models, tensor_utils
 from model_partitioner.partition import adapters, source
+
+logger = logging.getLogger(__name__)
 
 
 def _unit_for(placement: models.Placement, experts_per_file: int) -> models.PlannedUnit:
@@ -255,8 +259,12 @@ def partition(
     for unit in units:
         by_file[unit.file].append(unit)
     pieces = []
-    for file, file_units in by_file.items():
+    logger.info("writing partitions units=%d files=%d", len(units), len(by_file))
+    for done, (file, file_units) in enumerate(by_file.items(), 1):
         pieces.extend(_write_file(src, out_dir, file, file_units))
+        logger.debug("wrote file=%s units=%d", file, len(file_units))
+        if log_utils.progress_due(done, len(by_file)):
+            logger.info("partition progress files=%d/%d", done, len(by_file))
     files = {
         file: models.FileInfo(
             (out_dir / file).stat().st_size, tensor_utils.file_sha256(out_dir / file)

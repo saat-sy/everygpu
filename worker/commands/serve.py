@@ -1,9 +1,11 @@
 """The worker command: join, choose and load pieces, advertise until stopped."""
 
-import sys
+import logging
+import time
 
 import trio
 
+from monitoring.logging import logger as log_utils
 from model_partitioner.artifact import hub
 from model_partitioner.utils import constants as partitioner_constants
 from worker.commands import onboard
@@ -18,15 +20,22 @@ from worker.execution import sessions
 from worker.loading import budget
 from worker.utils import constants
 
+logger = logging.getLogger(__name__)
+
 
 async def run(args) -> int:
+    started = time.monotonic()
     name, free, total, weight_budget = budget.gpu_budget(args.max_vram)
-    print(
-        f"GPU: {name}, {free / constants.GIB:.2f} GiB free of {total / constants.GIB:.2f} GiB; "
-        f"weight budget {weight_budget / constants.GIB:.2f} GiB"
+    logger.info(
+        "gpu selected name=%s free_gib=%.2f total_gib=%.2f weight_budget_gib=%.2f",
+        name,
+        free / constants.GIB,
+        total / constants.GIB,
+        weight_budget / constants.GIB,
     )
     async with node.open_node(args.bootstrap) as dht:
-        print("bootstrap addresses:\n  " + "\n  ".join(node.peer_addresses(dht)))
+        for address in node.peer_addresses(dht):
+            logger.info("bootstrap address=%s", address)
         if args.new_network:
             repo = constants.DEFAULT_REPO
             revision = await trio.to_thread.run_sync(
@@ -36,7 +45,7 @@ async def run(args) -> int:
             repo, revision = await discovery.read_network_pin(dht)
         ads = advertiser.Advertiser(dht, repo, revision)
         await ads.publish()
-        print(f"artifact: {repo} @ {revision}")
+        logger.info("checkpoint pinned repo=%s revision=%s", repo, revision)
         try:
             async with trio.open_nursery() as nursery:
                 runner = forward.StageRunner()
@@ -56,13 +65,23 @@ async def run(args) -> int:
                     args.advertise_exec,
                     node.peer_addresses(dht),
                 )
-                print(
-                    f"execution server: {args.exec_host}:{port}; advertised: "
-                    f"{ads.execution or 'none (pass --advertise-exec HOST:PORT)'}"
+                logger.info(
+                    "execution server listening host=%s port=%d advertised=%s",
+                    args.exec_host,
+                    port,
+                    ads.execution,
                 )
+                if ads.execution is None:
+                    logger.warning(
+                        "no execution endpoint advertised: pass --advertise-exec HOST:PORT"
+                    )
                 nursery.start_soon(ads.refresh_forever)
                 units = await onboard.run(dht, ads, weight_budget, runner)
-                print(f"READY: {len(units)} units resident; Ctrl+C withdraws and stops")
+                logger.info(
+                    "worker ready units=%d elapsed_ms=%d; Ctrl+C withdraws and stops",
+                    len(units),
+                    log_utils.elapsed_ms(started),
+                )
                 await trio.sleep_forever()
         finally:
             if ads.ready:
@@ -72,15 +91,12 @@ async def run(args) -> int:
                     ) as withdrawal:
                         await ads.withdraw()
                     if withdrawal.cancelled_caught:
-                        print(
-                            "warning: availability withdrawal timed out",
-                            file=sys.stderr,
+                        logger.warning(
+                            "availability withdrawal timed out after %ds",
+                            constants.WITHDRAW_TIMEOUT_SECONDS,
                         )
                     else:
-                        print("availability withdrawn")
+                        logger.info("availability withdrawn")
                 except Exception as error:
-                    print(
-                        f"warning: availability withdrawal failed: {error}",
-                        file=sys.stderr,
-                    )
+                    logger.warning("availability withdrawal failed: %s", error)
     return partitioner_constants.EXIT_OK

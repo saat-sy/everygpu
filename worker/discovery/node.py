@@ -1,5 +1,7 @@
 """libp2p host and Kademlia DHT lifecycle: listening, bootstrap and routing-table upkeep."""
 
+import logging
+import time
 from contextlib import asynccontextmanager
 
 import trio
@@ -11,13 +13,17 @@ from libp2p.tools.utils import info_from_p2p_addr
 from libp2p.utils import address_validation
 from multiaddr import Multiaddr
 
+from monitoring.logging import logger as log_utils
 from worker.discovery import records
 from worker.utils import constants
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def open_node(bootstrap: list[str] | None, client: bool = False):
     """Run a host and DHT; with bootstrap peers, fail rather than found a separate network."""
+    started = time.monotonic()
     host = new_host()
     port = address_validation.find_free_port()
     async with host.run(listen_addrs=address_validation.get_available_interfaces(port)):
@@ -32,7 +38,17 @@ async def open_node(bootstrap: list[str] | None, client: bool = False):
         for peer in host.get_connected_peers():
             await dht.routing_table.add_peer(peer)
         async with background_trio_service(dht):
+            logger.info(
+                "%s peer=%s mode=%s bootstrap_peers=%d connected=%d elapsed_ms=%d",
+                "joined network" if bootstrap else "started new network",
+                host.get_id(),
+                "client" if client else "server",
+                len(bootstrap or ()),
+                len(host.get_connected_peers()),
+                log_utils.elapsed_ms(started),
+            )
             yield dht
+            logger.debug("node stopping peer=%s", host.get_id())
 
 
 def peer_addresses(dht: KadDHT) -> list[str]:
@@ -48,8 +64,13 @@ async def _connect_any(host, bootstrap: list[str]) -> None:
                 await host.connect(info_from_p2p_addr(Multiaddr(address)))
         except Exception as error:
             errors.append(f"{address}: {type(error).__name__}")
+            logger.debug("bootstrap peer unreachable %s", errors[-1])
     if len(errors) == len(bootstrap):
         raise RuntimeError(f"cannot join through any bootstrap peer: {errors}")
+    if errors:
+        logger.warning(
+            "bootstrap peers unreachable: %d of %d", len(errors), len(bootstrap)
+        )
 
 
 class _DepartedPeerRemover(INotifee):

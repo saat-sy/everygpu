@@ -2,13 +2,18 @@
 
 import argparse
 import json
+import logging
 import sys
+import time
 from pathlib import Path
 
+from monitoring.logging import logger as log_utils
 from model_partitioner.utils import constants, models, tensor_utils
 from model_partitioner.artifact import hub, loader
 from model_partitioner.partition import adapters, partitioner, source
 from model_partitioner.verification import verifier
+
+logger = logging.getLogger(__name__)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -66,7 +71,7 @@ def _partition(args) -> int:
     config_path = hub.fetch_config(args.model, revision)
     adapter.check_config(json.loads(config_path.read_text()))
     partitioner.check_destination(config_path.parent, output)
-    print(f"{args.model} @ {revision}")
+    logger.info("source pinned model=%s revision=%s", args.model, revision)
     files = hub.remote_files(args.model, revision)
     _check_space(files, output)
     with source.LocalSource(hub.fetch_source(args.model, revision)) as src:
@@ -88,9 +93,13 @@ def _check_space(files: dict[str, models.FileInfo], output: Path) -> None:
     """Report the download and output sizes; refuse if the output cannot fit."""
     weights = sum(i.size for n, i in files.items() if n.endswith(".safetensors"))
     free = tensor_utils.free_bytes(output)
-    print(
-        f"download: {weights:,} bytes into the Hugging Face cache (skipped if cached)\n"
-        f"output:   about {weights:,} bytes in {output} ({free:,} free there)"
+    logger.info(
+        "space check download_bytes=%d output_bytes=%d output=%s free_bytes=%d "
+        "(download skipped if cached)",
+        weights,
+        weights,
+        output,
+        free,
     )
     if free < weights:
         raise ValueError(
@@ -133,9 +142,10 @@ def _upload(args) -> int:
     if local.status != constants.PASSED:
         return constants.EXIT_FAILED
     created = hub.ensure_repo(args.repo)
-    print(
-        f"{'created private repo' if created else 'existing repo, visibility unchanged'}: "
-        f"{args.repo}"
+    logger.info(
+        "%s repo=%s",
+        "created private repo" if created else "existing repo, visibility unchanged",
+        args.repo,
     )
     revision = hub.upload_artifact(args.partitions, args.repo)
     problems = hub.check_upload(args.partitions, args.repo, revision)
@@ -155,8 +165,21 @@ def main() -> None:
         sys.exit(usage.code and constants.EXIT_FAILED)
     handlers = {"partition": _partition, "verify": _verify, "upload": _upload}
     try:
+        log_utils.configure()
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(constants.EXIT_FAILED)
+    started = time.monotonic()
+    logger.info("%s starting", args.command)
+    try:
         status = handlers[args.command](args)
     except (ValueError, OSError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        logger.error("%s failed: %s", args.command, error)
         status = constants.EXIT_FAILED
+    logger.info(
+        "%s finished status=%d elapsed_ms=%d",
+        args.command,
+        status,
+        log_utils.elapsed_ms(started),
+    )
     sys.exit(status)

@@ -1,5 +1,8 @@
 """The network's pinned checkpoint: its pin from the DHT and its layout from the manifest."""
 
+import logging
+import time
+
 import trio
 from libp2p.kad_dht.kad_dht import KadDHT
 
@@ -7,7 +10,10 @@ from client.network import models
 from model_partitioner.utils import constants as partitioner_constants
 from model_partitioner.utils import models as partitioner_models
 from worker.discovery import discovery
+from monitoring.logging import logger as log_utils
 from worker.loading import manifest as manifest_loading
+
+logger = logging.getLogger(__name__)
 
 _FAMILY = "olmoe"
 Cache = dict[tuple[str, str], models.Checkpoint]
@@ -15,16 +21,25 @@ Cache = dict[tuple[str, str], models.Checkpoint]
 
 async def load(dht: KadDHT, cache: Cache) -> models.Checkpoint:
     """The checkpoint the network pinned; a pin's manifest is fetched once."""
-    print("discovery: fetching network pin from DHT", flush=True)
+    logger.debug("reading network pin from the DHT")
     repo, revision = await discovery.read_network_pin(dht)
-    print(f"discovery: network pin {repo} @ {revision}", flush=True)
     if (repo, revision) not in cache:
-        print("discovery: downloading pinned manifest", flush=True)
+        started = time.monotonic()
+        logger.info("checkpoint manifest fetching repo=%s revision=%s", repo, revision)
         manifest = await trio.to_thread.run_sync(
             manifest_loading.fetch_manifest, repo, revision, abandon_on_cancel=True
         )
-        cache[(repo, revision)] = _checkpoint(repo, revision, manifest)
-    print("discovery: checkpoint ready", flush=True)
+        pinned = cache[(repo, revision)] = _checkpoint(repo, revision, manifest)
+        logger.info(
+            "checkpoint pinned repo=%s revision=%s layers=%d experts=%d elapsed_ms=%d",
+            repo,
+            revision,
+            pinned.layers,
+            pinned.experts,
+            log_utils.elapsed_ms(started),
+        )
+    else:
+        logger.debug("checkpoint cached repo=%s revision=%s", repo, revision)
     return cache[(repo, revision)]
 
 

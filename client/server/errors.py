@@ -37,11 +37,15 @@ async def http_error_response(
     return await api_error_response(request, error)
 
 
+def internal_error() -> models.ApiError:
+    """The error reported for unexpected failures, without their details."""
+    return models.ApiError(
+        500, constants.INTERNAL_ERROR_MESSAGE, error_type=constants.SERVER_ERROR
+    )
+
+
 async def internal_error_response(
     request: requests.Request, exc: Exception
 ) -> responses.JSONResponse:
     """Render unexpected failures without exposing their details."""
-    error = models.ApiError(
-        500, constants.INTERNAL_ERROR_MESSAGE, error_type=constants.SERVER_ERROR
-    )
-    return await api_error_response(request, error)
+    return await api_error_response(request, internal_error())

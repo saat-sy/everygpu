@@ -4,16 +4,20 @@ import argparse
 import logging
 import math
 import sys
+import time
 
 import huggingface_hub.errors
 import trio
 
+from monitoring.logging import logger as log_utils
 from model_partitioner.utils import constants as partitioner_constants
 from worker.commands import report
 from worker.commands import serve
 from worker.execution import endpoint
 from worker.utils import constants
 from worker.utils import models
+
+logger = logging.getLogger(__name__)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,24 +83,31 @@ def main() -> None:
         args = _parser().parse_args()
     except SystemExit as usage:
         sys.exit(usage.code and partitioner_constants.EXIT_FAILED)
+    try:
+        log_utils.configure()
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(partitioner_constants.EXIT_FAILED)
     if args.command is None and args.new_network == bool(args.bootstrap):
-        print("error: pass --new-network or --bootstrap ADDRESS", file=sys.stderr)
+        logger.error("pass --new-network or --bootstrap ADDRESS")
         sys.exit(partitioner_constants.EXIT_FAILED)
     if args.max_vram is not None and (
         not math.isfinite(args.max_vram) or args.max_vram <= 0
     ):
-        print("error: --max-vram must be positive and finite", file=sys.stderr)
+        logger.error("--max-vram must be positive and finite")
         sys.exit(partitioner_constants.EXIT_FAILED)
-    logging.getLogger(constants.LIBP2P_LOGGER).setLevel(logging.CRITICAL)
     handler = report.run if args.command == "inspect" else serve.run
+    command = args.command or "serve"
     status = partitioner_constants.EXIT_FAILED
+    started = time.monotonic()
+    logger.info("%s starting", command)
     try:
         status = trio.run(handler, args)
     except* KeyboardInterrupt:
-        print("\nstopped")
+        logger.info("interrupted; shutting down")
         status = partitioner_constants.EXIT_OK
     except* models.NoGPU as group:
-        _print_errors(group)
+        _log_errors(group)
         status = partitioner_constants.EXIT_INCOMPLETE
     except* (
         ValueError,
@@ -104,13 +115,19 @@ def main() -> None:
         OSError,
         huggingface_hub.errors.HfHubHTTPError,
     ) as group:
-        _print_errors(group)
+        _log_errors(group)
+    logger.info(
+        "%s finished status=%d elapsed_ms=%d",
+        command,
+        status,
+        log_utils.elapsed_ms(started),
+    )
     sys.exit(status)
 
 
-def _print_errors(group: BaseExceptionGroup) -> None:
+def _log_errors(group: BaseExceptionGroup) -> None:
     for error in group.exceptions:
         if isinstance(error, BaseExceptionGroup):
-            _print_errors(error)
+            _log_errors(error)
         else:
-            print(f"error: {error}", file=sys.stderr)
+            logger.error("%s", error)

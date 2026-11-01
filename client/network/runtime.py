@@ -2,12 +2,16 @@
 
 import asyncio
 import contextlib
+import logging
 import threading
 
 import trio
 
 from client.network import models
 from client.utils import constants
+from monitoring.logging import logger as log_utils
+
+logger = logging.getLogger(__name__)
 
 _ITEM, _ERROR, _END = "item", "error", "end"
 
@@ -35,6 +39,10 @@ class TrioRuntime:
         with contextlib.suppress(trio.RunFinishedError):
             self._token.run_sync_soon(self._nursery.cancel_scope.cancel)
         await asyncio.to_thread(self._thread.join, constants.STOP_TIMEOUT_SECONDS)
+        if self._thread.is_alive():
+            logger.warning(
+                "network thread still running after %ds", constants.STOP_TIMEOUT_SECONDS
+            )
 
     def spawn(self, function, *args) -> None:
         """Run a trio function in the background until the runtime stops."""
@@ -66,6 +74,7 @@ class Stream:
 
     def __init__(self, runtime: TrioRuntime):
         self._runtime = runtime
+        self._fields = log_utils.current()
         self._loop = asyncio.get_running_loop()
         self._items: asyncio.Queue = asyncio.Queue()
         self._credits = trio.Semaphore(constants.STREAM_BUFFER_ITEMS)
@@ -89,22 +98,33 @@ class Stream:
             self._runtime.call_soon(self._scope.cancel)
         except trio.RunFinishedError:
             return
-        with contextlib.suppress(asyncio.TimeoutError):
+        try:
             await asyncio.wait_for(
                 asyncio.shield(self._finished), constants.CLEANUP_WAIT_SECONDS
             )
+        except asyncio.TimeoutError:
+            with log_utils.bind(**self._fields):
+                logger.warning(
+                    "generation cleanup unfinished after %ds",
+                    constants.CLEANUP_WAIT_SECONDS,
+                )
 
     async def run(self, function, *args) -> None:
         """Trio side: drive the producer, then report how it ended."""
-        try:
-            with self._scope:
-                await function(self._emit, *args)
-            self._put(_END, None)
-        except Exception as error:
-            self._put(_ERROR, error)
-        finally:
-            with contextlib.suppress(RuntimeError):
-                self._loop.call_soon_threadsafe(self._settle)
+        with log_utils.bind(**self._fields):
+            try:
+                with self._scope:
+                    await function(self._emit, *args)
+                logger.debug(
+                    "generation task ended cancelled=%s", self._scope.cancelled_caught
+                )
+                self._put(_END, None)
+            except Exception as error:
+                logger.debug("generation task failed error=%s", type(error).__name__)
+                self._put(_ERROR, error)
+            finally:
+                with contextlib.suppress(RuntimeError):
+                    self._loop.call_soon_threadsafe(self._settle)
 
     async def _emit(self, item) -> None:
         try:

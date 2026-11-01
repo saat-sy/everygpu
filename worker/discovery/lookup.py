@@ -1,12 +1,16 @@
 """Record lookups: connected peers answer first; a bounded DHT search covers what they lack."""
 
+import logging
 import time
 
 import trio
 from libp2p.kad_dht.kad_dht import KadDHT
 
+from monitoring.logging import logger as log_utils
 from worker.discovery import records
 from worker.utils import constants
+
+logger = logging.getLogger(__name__)
 
 
 async def find_providers(
@@ -22,20 +26,24 @@ async def find_providers(
                 _ask_connected_providers, dht, key, connected_limiter, found
             )
     missing = [key for key in keys if not found[key]]
-    print(
-        f"discovery: connected peers know providers for {len(keys) - len(missing)}/"
-        f"{len(keys)} units ({time.monotonic() - started:.1f}s)",
-        flush=True,
+    logger.debug(
+        "connected peers know providers units=%d/%d elapsed_ms=%d",
+        len(keys) - len(missing),
+        len(keys),
+        log_utils.elapsed_ms(started),
     )
     if missing:
-        with trio.move_on_after(constants.SEARCH_PHASE_SECONDS):
+        with trio.move_on_after(constants.SEARCH_PHASE_SECONDS) as search:
             async with trio.open_nursery() as nursery:
                 for key in missing:
                     nursery.start_soon(_search_providers, dht, key, limiter, found)
-        print(
-            f"discovery: DHT search left {sum(not found[k] for k in missing)}/"
-            f"{len(missing)} units without providers ({time.monotonic() - started:.1f}s)",
-            flush=True,
+        logger.log(
+            logging.WARNING if search.cancelled_caught else logging.DEBUG,
+            "DHT search%s: %d of %d units without providers elapsed_ms=%d",
+            " timed out" if search.cancelled_caught else " finished",
+            sum(not found[k] for k in missing),
+            len(missing),
+            log_utils.elapsed_ms(started),
         )
     return found
 
@@ -49,8 +57,14 @@ async def get_value(dht: KadDHT, key: str) -> bytes | None:
     valid = [value for value in values if _is_valid(key, value)]
     if valid:
         return valid[records.RecordValidator().select(key, valid)]
+    logger.debug("no connected peer has the record; searching the DHT key=%s", key)
     with trio.move_on_after(constants.SEARCH_PHASE_SECONDS):
         return await dht.get_value(key)
+    logger.warning(
+        "DHT record search timed out after %ds key=%s",
+        constants.SEARCH_PHASE_SECONDS,
+        key,
+    )
     return None
 
 

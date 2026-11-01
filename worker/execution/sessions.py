@@ -11,6 +11,9 @@ class SessionTable:
         self.capacity = capacity
         self._sessions: dict[str, models.Session] = {}
 
+    def __len__(self) -> int:
+        return len(self._sessions)
+
     def admit(
         self,
         session_id: str,
@@ -46,8 +49,9 @@ class SessionTable:
             session.state.clear()
         return session is not None
 
-    def release_owned(self, owner: int) -> None:
-        for session_id in [
-            s.session_id for s in self._sessions.values() if s.owner == owner
-        ]:
+    def release_owned(self, owner: int) -> int:
+        """Release every session the connection admitted; return how many."""
+        owned = [s.session_id for s in self._sessions.values() if s.owner == owner]
+        for session_id in owned:
             self.release(session_id)
+        return len(owned)

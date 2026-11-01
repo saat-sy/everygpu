@@ -1,11 +1,15 @@
 """Request-time discovery: ready workers whose advertised executable stage fits the checkpoint."""
 
+import logging
+
 from libp2p.kad_dht.kad_dht import KadDHT
 
 from client.network import models
 from worker.discovery import discovery
 from worker.discovery import models as discovery_models
 from worker.execution import models as execution_models
+
+logger = logging.getLogger(__name__)
 
 
 def forget_cached(dht: KadDHT) -> None:
@@ -17,6 +21,7 @@ def forget_cached(dht: KadDHT) -> None:
 
 async def find_hops(dht: KadDHT, checkpoint: models.Checkpoint) -> list[models.Hop]:
     """Executable workers ordered by peer id; weight coverage alone never qualifies one."""
+    logger.info("worker search started units=%d", len(checkpoint.unit_ids()))
     found = await discovery.find_coverage(
         dht, checkpoint.repo, checkpoint.revision, checkpoint.unit_ids()
     )
@@ -26,11 +31,14 @@ async def find_hops(dht: KadDHT, checkpoint: models.Checkpoint) -> list[models.H
         for peer, status in peers.items():
             provided.setdefault(peer, set()).add(unit_id)
             statuses[peer] = status
-    return [
-        models.Hop(peer, status.execution, status.stage)
-        for peer, status in sorted(statuses.items())
-        if _executable(checkpoint, status, provided[peer])
-    ]
+    hops = []
+    for peer, status in sorted(statuses.items()):
+        if _executable(checkpoint, status, provided[peer]):
+            hops.append(models.Hop(peer, status.execution, status.stage))
+        else:
+            logger.debug("worker cannot execute this checkpoint peer=%s", peer)
+    logger.debug("ready workers=%d executable=%d", len(statuses), len(hops))
+    return hops
 
 
 def _executable(

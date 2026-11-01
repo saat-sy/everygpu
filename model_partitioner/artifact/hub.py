@@ -1,6 +1,7 @@
 """Hugging Face Hub access: pinned source download, upload and upload verification."""
 
 import contextlib
+import logging
 from pathlib import Path
 
 import huggingface_hub
@@ -8,6 +9,8 @@ import huggingface_hub.errors
 
 from model_partitioner.utils import constants, models, tensor_utils
 from model_partitioner.artifact import loader
+
+logger = logging.getLogger(__name__)
 
 _SOURCE_PATTERNS = ("*.safetensors", constants.INDEX_NAME, *constants.ASSET_PATTERNS)
 
@@ -35,6 +38,7 @@ def fetch_config(repo_id: str, revision: str) -> Path:
 
 def fetch_source(repo_id: str, revision: str) -> Path:
     """Weights and assets at exactly `revision`, via the Hugging Face cache."""
+    logger.info("fetching source repo=%s revision=%s", repo_id, revision)
     with _hub_errors(f"cannot download {repo_id}@{revision}"):
         return Path(
             huggingface_hub.snapshot_download(
@@ -70,6 +74,7 @@ def upload_artifact(artifact_dir: Path, repo_id: str) -> str:
     """Upload only the files the manifest declares; return the resulting revision."""
     manifest = loader.read_manifest(artifact_dir)
     patterns = [constants.MANIFEST_NAME, *loader.declared_files(manifest)]
+    logger.info("uploading files=%d repo=%s", len(patterns), repo_id)
     with _hub_errors(f"cannot upload to {repo_id}"):
         api = huggingface_hub.HfApi()
         api.upload_folder(

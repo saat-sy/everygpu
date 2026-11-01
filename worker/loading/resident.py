@@ -1,11 +1,16 @@
 """Selected units resident in GPU memory."""
 
+import logging
+
 import torch
 
+from monitoring.logging import logger as log_utils
 from model_partitioner.artifact import loader
 from model_partitioner.utils import models
 from worker.loading import download
 from worker.utils import constants
+
+logger = logging.getLogger(__name__)
 
 
 def load(
@@ -22,7 +27,7 @@ def load(
                 name: tensor.to(constants.DEVICE)
                 for name, tensor in artifact.load_unit(unit_id).items()
             }
-            print(f"\rloaded {i}/{len(unit_ids)} units", end="", flush=True)
+            if log_utils.progress_due(i, len(unit_ids)):
+                logger.info("loading progress units=%d/%d", i, len(unit_ids))
     torch.cuda.synchronize()
-    print()
     return resident
