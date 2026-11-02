@@ -4,11 +4,13 @@ import contextlib
 from pathlib import Path
 
 import huggingface_hub
+import huggingface_hub.constants
 import huggingface_hub.errors
 
 from model_partitioner.utils import constants, models, tensor_utils
 from model_partitioner.artifact import loader
 
+_ORG_WRITERS = frozenset({"write", "contributor", "admin"})
 _SOURCE_PATTERNS = ("*.safetensors", constants.INDEX_NAME, *constants.ASSET_PATTERNS)
 
 
@@ -84,17 +86,27 @@ def upload_artifact(artifact_dir: Path, repo_id: str) -> str:
 def check_upload(artifact_dir: Path, repo_id: str, revision: str) -> list[str]:
     """Problems found comparing every declared file at `revision` with the manifest."""
     manifest = loader.read_manifest(artifact_dir)
-    expected = {n: i.sha256 for n, i in loader.declared_files(manifest).items()}
-    expected[constants.MANIFEST_NAME] = tensor_utils.file_sha256(
-        Path(artifact_dir) / constants.MANIFEST_NAME
+    manifest_path = Path(artifact_dir) / constants.MANIFEST_NAME
+    expected = {
+        n: (i.size, i.sha256) for n, i in loader.declared_files(manifest).items()
+    }
+    expected[constants.MANIFEST_NAME] = (
+        manifest_path.stat().st_size,
+        tensor_utils.file_sha256(manifest_path),
     )
     with _hub_errors(f"cannot list {repo_id}@{revision}"):
-        present = set(huggingface_hub.list_repo_files(repo_id, revision=revision))
-    lfs = {name: info.sha256 for name, info in remote_files(repo_id, revision).items()}
+        info = huggingface_hub.HfApi().model_info(
+            repo_id, revision=revision, files_metadata=True
+        )
+    sizes = {s.rfilename: s.size for s in info.siblings}
+    lfs = {s.rfilename: s.lfs.sha256 for s in info.siblings if getattr(s, "lfs", None)}
     problems = []
-    for name, digest in expected.items():
-        if name not in present:
+    for name, (size, digest) in expected.items():
+        if name not in sizes:
             problems.append(f"{name}: not on Hub at {revision}")
+            continue
+        if sizes[name] != size:
+            problems.append(f"{name}: size {sizes[name]} != manifest {size}")
             continue
         with _hub_errors(f"cannot download {name}"):
             remote = lfs.get(name) or tensor_utils.file_sha256(
@@ -103,3 +115,53 @@ def check_upload(artifact_dir: Path, repo_id: str, revision: str) -> list[str]:
         if remote != digest:
             problems.append(f"{name}: sha256 differs")
     return problems
+
+
+def cache_dir() -> str:
+    return huggingface_hub.constants.HF_HUB_CACHE
+
+
+def missing_download_bytes(
+    repo_id: str, revision: str, files: dict[str, models.FileInfo]
+) -> int:
+    """Bytes of declared weight files not already in the Hugging Face cache."""
+    return sum(
+        info.size
+        for name, info in files.items()
+        if name.endswith(".safetensors")
+        and not isinstance(
+            huggingface_hub.try_to_load_from_cache(repo_id, name, revision=revision),
+            str,
+        )
+    )
+
+
+def check_upload_access(repo_id: str) -> str:
+    """Raise ValueError unless the token can write (existing) or plausibly create `repo_id`."""
+    token = huggingface_hub.get_token()
+    if not token:
+        raise ValueError(
+            "no Hugging Face token: run `hf auth login` or set HF_TOKEN (write access)"
+        )
+    api = huggingface_hub.HfApi()
+    with _hub_errors(
+        "Hugging Face token rejected; run `hf auth login` or set HF_TOKEN"
+    ):
+        who = api.whoami(token=token, cache=False)
+    with _hub_errors(f"cannot check {repo_id}"):
+        exists = api.repo_exists(repo_id, repo_type="model")
+    if exists:
+        with _hub_errors(f"token cannot write to {repo_id}"):
+            api.auth_check(repo_id, repo_type="model", write=True)
+        return f"{who['name']} may write to existing {repo_id} (visibility unchanged)"
+    namespace = repo_id.split("/")[0]
+    orgs = {org["name"]: org.get("roleInOrg") for org in who.get("orgs", [])}
+    role = who.get("auth", {}).get("accessToken", {}).get("role")
+    if role == "read":
+        raise ValueError("token is read-only; a write token is required")
+    if namespace != who["name"] and orgs.get(namespace) not in _ORG_WRITERS:
+        raise ValueError(f"{who['name']} cannot create repos under {namespace!r}")
+    return (
+        f"{who['name']} may create private {repo_id} (token role {role}); "
+        "create permission is confirmed only at upload"
+    )

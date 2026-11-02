@@ -1,6 +1,7 @@
 """Data structures for specs, plans and the manifest. No I/O."""
 
 import dataclasses
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from model_partitioner.utils import constants
@@ -16,6 +17,39 @@ class IncompleteSource(ValueError):
 
 class ChecksumMismatch(ValueError):
     """Raised when a loaded tensor does not match its manifest checksum."""
+
+
+class StageError(Exception):
+    """A stage ended without passing; `outcome` is FAILED or INCOMPLETE."""
+
+    def __init__(self, message: str, outcome: str = constants.FAILED):
+        super().__init__(message)
+        self.outcome = outcome
+
+
+class Interrupted(BaseException):
+    """Raised by the SIGTERM handler; behaves like KeyboardInterrupt."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """A fully resolved, validated run: what to do, where, and with what checks."""
+
+    model: str
+    report_dir: Path
+    source_dir: Path | None = None
+    output: Path | None = None
+    verify_only: Path | None = None
+    verify: str | None = None
+    upload: str | None = None
+
+    @property
+    def artifact_dir(self) -> Path:
+        return self.verify_only or self.output
 
 
 @dataclass(frozen=True)

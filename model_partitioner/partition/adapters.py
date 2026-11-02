@@ -3,8 +3,6 @@
 import importlib.util
 import re
 
-import torch
-
 from model_partitioner.utils import constants, models
 
 _EXPERT_KEY = re.compile(r"^mlp\.experts\.(\d+)\.")
@@ -99,7 +97,7 @@ _QUANTIZED = r"(weight|weight_scale|weight_scale_2|input_scale)"
 
 class MuseSparkAdapter(Adapter):
     family = "muse_spark"
-    repo_id = "meta-models/Muse-Spark-Open-816B-A42B-NVFP4"
+    repo_id = constants.DEFAULT_MODEL
     model_type = "muse_spark"
     layer_prefix = "model.language_model.layers."
     layer_tensors = re.compile(
@@ -130,7 +128,9 @@ class MuseSparkAdapter(Adapter):
 
     def output_blocker(self, config: dict, gpu: bool) -> str | None:
         if not gpu:
-            return "NVFP4 output verification is only supported with --gpu"
+            return "NVFP4 output verification is only supported with --verify gpu"
+        import torch
+
         if importlib.util.find_spec("modelopt") is None:
             return "NVFP4 inference needs nvidia-modelopt, which is not installed"
         if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 10:

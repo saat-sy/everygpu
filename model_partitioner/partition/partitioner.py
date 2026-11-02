@@ -7,7 +7,13 @@ from pathlib import Path
 
 from safetensors.torch import save_file
 
-from model_partitioner.utils import constants, models, tensor_utils
+from model_partitioner.utils import (
+    constants,
+    models,
+    path_utils,
+    progress,
+    tensor_utils,
+)
 from model_partitioner.partition import adapters, source
 
 
@@ -208,30 +214,31 @@ def check_revision(revision: str) -> str:
 
 
 def check_destination(source_root: Path, out_dir: Path) -> None:
-    source_root, out_dir = source_root.resolve(), out_dir.resolve()
-    if (
-        out_dir == source_root
-        or source_root in out_dir.parents
-        or out_dir in source_root.parents
-    ):
+    if path_utils.overlaps(source_root, out_dir):
         raise ValueError(f"output {out_dir} overlaps source {source_root}")
-    tensor_utils.require_empty_dir(out_dir)
+    path_utils.require_empty_dir(out_dir)
 
 
-def _source_files(src: source.LocalSource, expected: dict[str, str]):
-    if unchecked := set(src.files) - set(expected):
+def _source_files(
+    src: source.LocalSource,
+    expected: dict[str, str] | None,
+    tracker: progress.Progress,
+):
+    if expected is not None and (unchecked := set(src.files) - set(expected)):
         raise ValueError(f"no Hub sha256 to check shards {sorted(unchecked)}")
     files = []
-    for name in src.files:
-        path = src.root / name
-        digest = tensor_utils.file_sha256(path)
-        if expected[name] != digest:
-            raise ValueError(f"{name}: sha256 {digest} != Hub {expected[name]}")
-        files.append(
-            models.SourceFile(
-                name, path.stat().st_size, digest, src.shard_metadata(name)
+    with tracker.task("hash source shards", len(src.files)) as task:
+        for name in src.files:
+            path = src.root / name
+            digest = tensor_utils.file_sha256(path)
+            if expected is not None and expected[name] != digest:
+                raise ValueError(f"{name}: sha256 {digest} != Hub {expected[name]}")
+            files.append(
+                models.SourceFile(
+                    name, path.stat().st_size, digest, src.shard_metadata(name)
+                )
             )
-        )
+            task.advance()
     return files
 
 
@@ -240,29 +247,35 @@ def partition(
     adapter: adapters.Adapter,
     out_dir: Path,
     repo_id: str,
-    revision: str,
-    expected_hashes: dict[str, str],
+    revision: str | None,
+    expected_hashes: dict[str, str] | None,
     experts_per_file: int = constants.DEFAULT_EXPERTS_PER_FILE,
+    tracker: progress.Progress | None = None,
 ) -> models.Manifest:
-    check_revision(revision)
+    """Without `expected_hashes` the source is an unpinned local directory and `revision` is derived."""
+    if expected_hashes is not None:
+        check_revision(revision)
     out_dir = Path(out_dir)
     check_destination(src.root, out_dir)
+    tracker = tracker or progress.Progress()
     config = src.config()
     specs = src.specs()
     units = plan(specs, adapter, config, experts_per_file)
-    source_files = _source_files(src, expected_hashes)
+    source_files = _source_files(src, expected_hashes, tracker)
+    if expected_hashes is None:
+        revision = source.local_revision(src.root, source_files)
     by_file = defaultdict(list)
     for unit in units:
         by_file[unit.file].append(unit)
-    pieces = []
-    for file, file_units in by_file.items():
-        pieces.extend(_write_file(src, out_dir, file, file_units))
-    files = {
-        file: models.FileInfo(
-            (out_dir / file).stat().st_size, tensor_utils.file_sha256(out_dir / file)
-        )
-        for file in by_file
-    }
+    pieces, files = [], {}
+    with tracker.task("write and hash partition files", len(by_file)) as task:
+        for file, file_units in by_file.items():
+            pieces.extend(_write_file(src, out_dir, file, file_units))
+            path = out_dir / file
+            files[file] = models.FileInfo(
+                path.stat().st_size, tensor_utils.file_sha256(path)
+            )
+            task.advance()
     manifest = models.Manifest(
         family=adapter.family,
         repo_id=repo_id,

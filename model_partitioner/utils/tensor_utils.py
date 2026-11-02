@@ -1,7 +1,6 @@
 """Stateless hashing and directory helpers shared across the partitioner."""
 
 import hashlib
-import shutil
 from pathlib import Path
 
 import torch
@@ -27,17 +26,3 @@ def numel(shape) -> int:
     for dim in shape:
         count *= dim
     return count
-
-
-def free_bytes(path: Path) -> int:
-    """Free space on the filesystem that holds (or would hold) `path`."""
-    path = Path(path).resolve()
-    while not path.exists():
-        path = path.parent
-    return shutil.disk_usage(path).free
-
-
-def require_empty_dir(path: Path) -> None:
-    path = Path(path)
-    if path.exists() and (not path.is_dir() or any(path.iterdir())):
-        raise ValueError(f"{path} exists and is not an empty directory")

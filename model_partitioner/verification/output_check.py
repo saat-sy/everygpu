@@ -2,16 +2,16 @@
 
 import gc
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
 import torch
 import transformers
 
-from model_partitioner.utils import constants, models
-from model_partitioner.artifact import hub, loader
+from model_partitioner.utils import constants, models, progress
+from model_partitioner.artifact import loader
 from model_partitioner.partition import adapters
+from model_partitioner.verification import verifier
 
 
 def _dtype(adapter: adapters.Adapter, config: dict):
@@ -30,7 +30,7 @@ def _logits(
     options: models.RunOptions,
 ) -> torch.Tensor:
     model_class = getattr(transformers, adapter.model_class)
-    kwargs = {"dtype": _dtype(adapter, config)}
+    kwargs = {"dtype": _dtype(adapter, config), "local_files_only": True}
     if options.device_map:
         kwargs["device_map"] = options.device_map
     model = model_class.from_pretrained(model_dir, **kwargs)
@@ -54,7 +54,7 @@ def _arch_runs(arch: str, capability: tuple[int, int]) -> bool:
     return (major, minor) <= capability
 
 
-def _gpu_blocker() -> str | None:
+def gpu_blocker() -> str | None:
     if not torch.cuda.is_available():
         return "GPU requested but CUDA is not available"
     archs = torch.cuda.get_arch_list()
@@ -84,11 +84,14 @@ def _unverified(reason: str) -> models.CheckResult:
 
 
 def check_outputs(
-    artifact_dir: Path, options: models.RunOptions = models.RunOptions()
+    artifact_dir: Path,
+    options: models.RunOptions = models.RunOptions(),
+    source_dir: Path | None = None,
+    tracker: progress.Progress | None = None,
 ) -> models.CheckResult:
     """Compare logits of the pinned source and a checkpoint reassembled in scratch space."""
     gpu = options.device_map is not None or options.device.startswith("cuda")
-    if gpu and (blocker := _gpu_blocker()):
+    if gpu and (blocker := gpu_blocker()):
         return _unverified(blocker)
     with loader.Artifact(artifact_dir) as artifact:
         manifest = artifact.manifest
@@ -97,15 +100,14 @@ def check_outputs(
             return _unverified(blocker)
         needed = sum(info.nbytes for info in manifest.source_tensors.values())
         try:
-            source_dir = hub.fetch_source(manifest.repo_id, manifest.revision)
+            source_dir = verifier.locate_source(manifest, source_dir)
             scratch = _scratch_dir(artifact_dir, needed)
         except (ValueError, OSError) as error:
             return _unverified(str(error))
-        print(
-            f"scratch: {scratch} (about {needed:,} bytes)", file=sys.stderr, flush=True
-        )
+        tracker = tracker or progress.Progress()
+        tracker.say(f"scratch: {scratch} (about {needed:,} bytes)")
         try:
-            return _compare(artifact, source_dir, adapter, options, scratch)
+            return _compare(artifact, source_dir, adapter, options, scratch, tracker)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
@@ -116,6 +118,7 @@ def _compare(
     adapter: adapters.Adapter,
     options: models.RunOptions,
     scratch: Path,
+    tracker: progress.Progress,
 ) -> models.CheckResult:
     config = artifact.manifest.config
     generator = torch.Generator().manual_seed(constants.OUTPUT_CHECK_SEED)
@@ -125,10 +128,13 @@ def _compare(
         (constants.OUTPUT_CHECK_BATCH, constants.OUTPUT_CHECK_SEQ_LEN),
         generator=generator,
     )
-    reference = _logits(source_dir, adapter, config, ids, options)
+    with tracker.task("load original model and compute logits"):
+        reference = _logits(source_dir, adapter, config, ids, options)
     reassembled_dir = scratch / "reassembled"
-    artifact.export_checkpoint(reassembled_dir)
-    candidate = _logits(reassembled_dir, adapter, config, ids, options)
+    with tracker.task("reassemble checkpoint from partitions"):
+        artifact.export_checkpoint(reassembled_dir)
+    with tracker.task("load reassembled model and compute logits"):
+        candidate = _logits(reassembled_dir, adapter, config, ids, options)
     diff = (reference - candidate).abs().max().item()
     close = torch.allclose(
         reference, candidate, atol=constants.LOGITS_ATOL, rtol=constants.LOGITS_RTOL

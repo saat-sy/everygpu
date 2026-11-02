@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model partitioner reports and environment
+/reports/
+/.venv-model-partitioner/

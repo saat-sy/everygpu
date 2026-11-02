@@ -6,7 +6,7 @@ import huggingface_hub
 import huggingface_hub.constants
 
 from model_partitioner.utils import constants as partitioner_constants
-from model_partitioner.utils import models, tensor_utils
+from model_partitioner.utils import models, path_utils, tensor_utils
 
 
 def download_verified(
@@ -40,7 +40,7 @@ def _check_space(
         )
     ]
     size = sum(manifest.files[f].size for f in missing)
-    free = tensor_utils.free_bytes(Path(huggingface_hub.constants.HF_HUB_CACHE))
+    free = path_utils.free_bytes(Path(huggingface_hub.constants.HF_HUB_CACHE))
     print(
         f"download: {len(missing)} of {len(files)} files, {size:,} bytes "
         f"({free:,} free in the Hugging Face cache)"
