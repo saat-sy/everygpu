@@ -18,6 +18,9 @@ from client.network import runtime as runtime_lib
 from client.utils import constants
 from client.utils import models as client_models
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import metrics
+from monitoring.telemetry import phases
+from monitoring.telemetry import tracing
 from worker.discovery import node
 
 logger = logging.getLogger(__name__)
@@ -58,17 +61,24 @@ class Service:
 
     async def _maintain(self) -> None:
         while True:
+            joining = time.monotonic()
             try:
                 async with node.open_node(self.bootstrap, client=True) as dht:
+                    metrics.record("network.join", time.monotonic() - joining)
+                    metrics.record("network.connected", 1)
                     self._dht = dht
                     self._reported = ""
-                    while dht.get_routing_table_size():
-                        await trio.sleep(constants.RECONNECT_SECONDS)
-                    self._degrade("lost every peer")
+                    try:
+                        while dht.get_routing_table_size():
+                            await trio.sleep(constants.RECONNECT_SECONDS)
+                        self._degrade("lost every peer")
+                    finally:
+                        metrics.record("network.connected", -1)
             except Exception as error:
                 self._degrade(f"{type(error).__name__}: {error}", error)
             finally:
                 self._dht = None
+            metrics.record("network.reconnects")
             await trio.sleep(constants.RECONNECT_SECONDS)
 
     def _degrade(self, reason: str, error: Exception | None = None) -> None:
@@ -79,12 +89,18 @@ class Service:
             self._reported = reason
 
     async def _generate(self, emit, request: client_models.ChatRequest) -> None:
+        with tracing.span("client.generate"):
+            await self._generate_traced(emit, request)
+
+    async def _generate_traced(self, emit, request: client_models.ChatRequest) -> None:
         started = time.monotonic()
         pinned, route = await self._route()
         tokenizer = await self._tokenizer(pinned)
-        prompt = await trio.to_thread.run_sync(
-            text.encode_chat, tokenizer, request.messages, abandon_on_cancel=True
-        )
+        with phases.timed("setup.prompt_encoding", traced=True):
+            prompt = await trio.to_thread.run_sync(
+                text.encode_chat, tokenizer, request.messages, abandon_on_cancel=True
+            )
+        metrics.record("tokens.prompt", len(prompt))
         logger.debug("prompt encoded prompt_tokens=%d", len(prompt))
         limit = pinned.config["max_position_embeddings"]
         if len(prompt) >= limit:
@@ -98,6 +114,9 @@ class Service:
             )
         detokenizer = text.Detokenizer(tokenizer)
         async with admission.open_session(route) as session:
+            metrics.record("setup.total", time.monotonic() - started)
+            if request.exchange:
+                request.exchange.phase = constants.PHASE_GENERATION
             reason, count = await loop.run(
                 session,
                 prompt,
@@ -107,6 +126,7 @@ class Service:
                 pinned.config["vocab_size"],
                 emit,
                 detokenizer,
+                request.exchange.started if request.exchange else 0.0,
             )
         logger.info(
             "generation finished reason=%s prompt_tokens=%d completion_tokens=%d "
@@ -125,13 +145,14 @@ class Service:
     ) -> generation_models.Tokenizer:
         """The pinned revision's tokenizer; fetched and verified once per pin."""
         key = (pinned.repo, pinned.revision)
-        async with self._assets:
+        async with phases.waited(self._assets, "setup.tokenizer_wait"):
             if key not in self._tokenizers:
                 started = time.monotonic()
                 logger.info("tokenizer loading revision=%s", pinned.revision)
-                self._tokenizers[key] = await trio.to_thread.run_sync(
-                    assets.load, pinned, abandon_on_cancel=True
-                )
+                with phases.timed("setup.tokenizer_load", traced=True):
+                    self._tokenizers[key] = await trio.to_thread.run_sync(
+                        assets.load, pinned, abandon_on_cancel=True
+                    )
                 logger.info(
                     "tokenizer loaded revision=%s elapsed_ms=%d",
                     pinned.revision,
@@ -147,13 +168,16 @@ class Service:
         started = time.monotonic()
         logger.info("route discovery started")
         try:
-            async with self._lookup:
+            async with phases.waited(self._lookup, "setup.discovery_lock_wait"):
                 with trio.fail_after(constants.DISCOVERY_TIMEOUT_SECONDS):
                     discovery.forget_cached(dht)
-                    pinned = await checkpoint.load(dht, self._checkpoints)
+                    with phases.timed("setup.checkpoint_lookup", traced=True):
+                        pinned = await checkpoint.load(dht, self._checkpoints)
                     phase = "worker provider lookup"
-                    hops = await discovery.find_hops(dht, pinned)
+                    with phases.timed("setup.provider_lookup", traced=True):
+                        hops = await discovery.find_hops(dht, pinned)
         except trio.TooSlowError:
+            metrics.record("timeouts", phase="discovery")
             raise models.RouteError(
                 f"network discovery timed out during {phase} "
                 f"after {constants.DISCOVERY_TIMEOUT_SECONDS}s"
@@ -164,7 +188,8 @@ class Service:
             raise models.RouteError(
                 f"network discovery failed: {type(error).__name__}: {error}"
             ) from error
-        route = routing.select(pinned, hops)
+        with phases.timed("setup.route_selection", traced=True):
+            route = routing.select(pinned, hops)
         logger.info(
             "route selected hops=%d workers=%d elapsed_ms=%d",
             len(route.hops),

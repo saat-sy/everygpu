@@ -35,6 +35,7 @@ class ChatRequest:
     stream: bool
     max_tokens: int
     temperature: float
+    exchange: "Exchange | None" = None
 
 
 @dataclasses.dataclass
@@ -50,3 +51,8 @@ class Exchange:
     completion_tokens: int | None = None
     error: str = ""
     exc: BaseException | None = None
+    span: object = None
+    context: object = None
+    phase: str = constants.PHASE_VALIDATION
+    content_chunks: int = 0
+    content_sent: bool = False

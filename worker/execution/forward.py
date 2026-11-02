@@ -10,6 +10,13 @@ import torch
 import trio
 
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import constants as telemetry_constants
+from monitoring.telemetry import device as device_telemetry
+from monitoring.telemetry import metrics
+from monitoring.telemetry import phases
+from monitoring.telemetry import slow
+from monitoring.telemetry import timing
+from monitoring.telemetry import tracing
 from worker.execution import models
 from worker.execution import relay
 from worker.execution import stage as stage_lib
@@ -28,6 +35,7 @@ class StageRunner:
         self.stage: stage_lib.Stage | None = None
         self.unavailable = "no stage is resident"
         self._device = trio.CapacityLimiter(1)
+        self._threads = trio.CapacityLimiter(1)
 
     def install(self, config: dict, weights: dict) -> None:
         """Build the stage; on failure forwards stay refused with the reason."""
@@ -57,7 +65,8 @@ class StageRunner:
         raise models.RequestError("unknown_session", "session released")
 
     async def _run(self, session, stage, request, payload: bytes):
-        async with session.lock:
+        phase = timing.phase(request.step)
+        async with phases.waited(session.lock, "worker.session_lock_wait", phase=phase):
             _check_live(session)
             if request.position != session.state.get("position", 0):
                 raise models.RequestError(
@@ -69,9 +78,16 @@ class StageRunner:
                 )
             caches = session.state.get("kv", {})
             started = time.monotonic()
-            extended, output = await trio.to_thread.run_sync(
-                _step, stage, request, payload, caches, limiter=self._device
-            )
+            async with phases.waited(self._device, "worker.device_wait", phase=phase):
+                extended, output = await trio.to_thread.run_sync(
+                    _step,
+                    stage,
+                    request,
+                    payload,
+                    caches,
+                    time.monotonic(),
+                    limiter=self._threads,
+                )
             logger.debug(
                 "stage computed step=%d position=%d seq=%d layers=%d-%d elapsed_ms=%d",
                 request.step,
@@ -102,7 +118,8 @@ class StageRunner:
             "shape": [1, request.seq, stage.cfg.hidden],
             "dtype": _DTYPE_NAMES[stage.dtype],
         }
-        return await relay.forward(session, next_hop, output), b""
+        reply = await relay.forward(session, next_hop, output, request.trace)
+        return reply, b""
 
 
 def _check_live(session: models.Session) -> None:
@@ -147,7 +164,8 @@ def _parse(stage: stage_lib.Stage, meta: dict, payload: bytes) -> models.Forward
         raise models.RequestError(
             "too_long", f"sequence exceeds {cfg.max_positions} positions"
         )
-    return dataclasses.replace(request, step=step)
+    trace = tracing.clean(meta.get(telemetry_constants.TRACE_KEY))
+    return dataclasses.replace(request, step=step, trace=trace)
 
 
 def _parse_embedding(stage, meta, payload, position, temperature):
@@ -207,17 +225,79 @@ def _temperature(value) -> float:
     return converted
 
 
-def _step(stage, request: models.ForwardRequest, payload: bytes, caches: dict):
+def _step(
+    stage, request: models.ForwardRequest, payload: bytes, caches: dict, queued: float
+):
     """Blocking work: returns the extended caches and a sampled id or serialized activations."""
+    phase = timing.phase(request.step)
+    handoff = time.monotonic() - queued
+    metrics.record("worker.thread_handoff", handoff, phase=phase)
+    timer = device_telemetry.timer(torch, stage.device)
+    attributes = {
+        "everygpu.phase": phase,
+        "everygpu.step": request.step,
+        "everygpu.seq": request.seq,
+        "everygpu.position": request.position,
+        "everygpu.stage": f"{stage.first}-{stage.stop}",
+        "everygpu.thread_handoff_seconds": handoff,
+    }
+    with tracing.span("worker.stage_execute", attributes) as span:
+        with phases.timed("worker.stage_execute", phase=phase):
+            extended, output = _compute(stage, request, payload, caches, timer, phase)
+        _report_gpu(timer.read(), span, stage, request, phase)
+    return extended, output
+
+
+def _compute(stage, request, payload, caches, timer, phase):
     with torch.inference_mode():
-        if request.token_ids is not None:
-            hidden = stage.embed(request.token_ids)
-        else:
-            hidden = torch.frombuffer(
-                bytearray(payload), dtype=_DTYPES[request.dtype]
-            ).reshape(request.shape)
-            hidden = hidden.to(device=stage.device, dtype=stage.dtype)
-        hidden, extended = stage.run_layers(hidden, request.position, caches)
-        if stage.completes:
-            return extended, stage.sample(hidden, request.temperature)
-        return extended, hidden.cpu().contiguous().view(torch.uint8).numpy().tobytes()
+        hidden = None
+        if request.token_ids is None:
+            with (
+                tracing.span("worker.cpu_prepare"),
+                phases.timed("worker.cpu_prepare", phase=phase),
+            ):
+                host = torch.frombuffer(
+                    bytearray(payload), dtype=_DTYPES[request.dtype]
+                ).reshape(request.shape)
+            with timer.interval("h2d"):
+                hidden = host.to(device=stage.device, dtype=stage.dtype)
+        with timer.interval("compute"):
+            if hidden is None:
+                hidden = stage.embed(request.token_ids)
+            hidden, extended = stage.run_layers(hidden, request.position, caches)
+            if stage.completes:
+                return extended, stage.sample(hidden, request.temperature)
+        with timer.interval("d2h"):
+            host = hidden.cpu().contiguous()
+        with (
+            tracing.span("worker.serialize"),
+            phases.timed("worker.serialize", phase=phase),
+        ):
+            return extended, host.view(torch.uint8).numpy().tobytes()
+
+
+def _report_gpu(readings: dict, span, stage, request, phase: str) -> None:
+    for part, seconds in readings.items():
+        metrics.record("worker.gpu", seconds, part=part, phase=phase)
+        span.set_attribute(f"everygpu.gpu.{part}_seconds", seconds)
+    if "compute" in readings:
+        slow.check(
+            telemetry_constants.KIND_GPU,
+            (
+                stage.first,
+                stage.stop,
+                phase,
+                timing.bucket(request.seq),
+                timing.bucket(request.position),
+            ),
+            readings["compute"],
+            span,
+            {
+                "stage": f"{stage.first}-{stage.stop}",
+                "step": request.step,
+                "seq": request.seq,
+                "position": request.position,
+                "phase": phase,
+            },
+            phase=phase,
+        )

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import secrets
@@ -10,6 +11,7 @@ import time
 import anyio
 from starlette import applications
 from starlette import exceptions
+from starlette import middleware
 from starlette import requests
 from starlette import responses
 from starlette import routing
@@ -21,8 +23,11 @@ from client.server import validation
 from client.utils import constants
 from client.utils import models
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import metrics
+from monitoring.telemetry import tracing
 
 logger = logging.getLogger(__name__)
+_EXCHANGE_KEY = "everygpu.exchange"
 
 
 async def list_models(request: requests.Request) -> responses.JSONResponse:
@@ -41,7 +46,22 @@ async def chat_completions(request: requests.Request) -> responses.Response:
     exchange = models.Exchange(
         secrets.token_hex(constants.COMPLETION_ID_BYTES), time.monotonic()
     )
-    with log_utils.bind(request_id=exchange.request_id):
+    exchange.span = tracing.start(
+        "http.request",
+        {
+            "http.request.method": request.method,
+            "http.route": request.url.path,
+            "everygpu.request_id": exchange.request_id,
+        },
+        kind="server",
+    )
+    exchange.context = tracing.context_of(exchange.span)
+    request.scope[_EXCHANGE_KEY] = exchange
+    metrics.record("requests.active", 1)
+    with (
+        log_utils.bind(request_id=exchange.request_id),
+        tracing.activate(exchange.context),
+    ):
         try:
             return await _chat(request, exchange)
         except models.ApiError as error:
@@ -77,6 +97,10 @@ async def _chat(request: requests.Request, exchange: models.Exchange):
     except ValueError:
         raise models.ApiError(400, "Request body must be valid JSON.") from None
     params = validation.validate_chat_request(body)
+    params = dataclasses.replace(params, exchange=exchange)
+    exchange.phase = constants.PHASE_SETUP
+    exchange.span.set_attribute("everygpu.stream", params.stream)
+    exchange.span.set_attribute("everygpu.max_tokens", params.max_tokens)
     logger.info(
         "chat request accepted stream=%s messages=%d max_tokens=%d",
         params.stream,
@@ -116,6 +140,76 @@ def _disconnected(exchange: models.Exchange) -> responses.Response:
     return responses.Response(status_code=exchange.status)
 
 
+class _Lifetime:
+    """ASGI wrapper that ends a chat request's span and metrics once its response is delivered."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await self.app(scope, receive, send)
+        except asyncio.CancelledError:
+            _interrupted(scope, constants.OUTCOME_CANCELLED)
+            raise
+        except requests.ClientDisconnect:
+            _interrupted(scope, constants.OUTCOME_DISCONNECTED)
+            raise
+        except Exception as error:
+            _interrupted(scope, constants.OUTCOME_FAILED, error)
+            raise
+        finally:
+            if exchange := scope.get(_EXCHANGE_KEY):
+                _end(exchange)
+
+
+def _interrupted(scope, outcome: str, error: Exception | None = None) -> None:
+    """Record a delivery failure unless the request already ended with a worse outcome."""
+    exchange = scope.get(_EXCHANGE_KEY)
+    if exchange and exchange.outcome == constants.OUTCOME_COMPLETED:
+        exchange.outcome, exchange.exc = outcome, error
+        with (
+            log_utils.bind(request_id=exchange.request_id),
+            tracing.activate(exchange.context),
+        ):
+            logger.warning(
+                "response delivery interrupted outcome=%s error=%s",
+                outcome,
+                type(error).__name__,
+            )
+
+
+def _end(exchange: models.Exchange) -> None:
+    """Record request metrics and end the root span; runs once per request."""
+    with tracing.activate(exchange.context):
+        _record_end(exchange)
+
+
+def _record_end(exchange: models.Exchange) -> None:
+    seconds = time.monotonic() - exchange.started
+    outcome = exchange.outcome
+    span = exchange.span
+    span.set_attribute("http.response.status_code", exchange.status)
+    span.set_attribute("everygpu.outcome", outcome)
+    span.set_attribute("everygpu.chunks", exchange.chunks)
+    span.set_attribute("everygpu.content_chunks", exchange.content_chunks)
+    if exchange.completion_tokens is not None:
+        span.set_attribute("everygpu.sampled_tokens", exchange.completion_tokens)
+    if outcome == constants.OUTCOME_FAILED:
+        tracing.mark_error(
+            span, type(exchange.exc).__name__ if exchange.exc else outcome
+        )
+    metrics.record(
+        "request.duration", seconds, outcome=outcome, stream=exchange.streaming
+    )
+    metrics.record(
+        "requests", outcome=outcome, phase=exchange.phase, stream=exchange.streaming
+    )
+    metrics.record("chunks.text", exchange.content_chunks)
+    metrics.record("requests.active", -1)
+    span.end()
+
+
 def _log_end(exchange: models.Exchange) -> None:
     level = (
         logging.ERROR if exchange.outcome == constants.OUTCOME_FAILED else logging.INFO
@@ -140,6 +234,7 @@ async def _complete(stream, item, watcher, exchange) -> responses.Response:
     while not isinstance(item, generation_models.Finish):
         pieces.append(item)
         exchange.chunks = len(pieces)
+        exchange.content_chunks += bool(item)
         item = await _next(stream, watcher)
         if item is _DISCONNECTED:
             return _disconnected(exchange)
@@ -159,7 +254,7 @@ async def _complete(stream, item, watcher, exchange) -> responses.Response:
                 "completion_tokens": item.completion_tokens,
                 "total_tokens": item.prompt_tokens + item.completion_tokens,
             },
-        }
+        },
     )
 
 
@@ -171,7 +266,9 @@ async def _events(stream, item, exchange):
         while not isinstance(item, generation_models.Finish):
             exchange.chunks += 1
             if item:
+                exchange.content_chunks += 1
                 yield _sse(envelope, {"content": item}, None)
+                _content_sent(exchange)
             item = await stream.next()
         exchange.completion_tokens = item.completion_tokens
         yield _sse(envelope, {}, item.reason)
@@ -191,6 +288,15 @@ async def _events(stream, item, exchange):
         await stream.aclose()
 
 
+def _content_sent(exchange: models.Exchange) -> None:
+    """Runs once ASGI send has accepted a content chunk; records only the first."""
+    if not exchange.content_sent:
+        exchange.content_sent = True
+        metrics.record(
+            "request.first_content_delivery", time.monotonic() - exchange.started
+        )
+
+
 class _StreamingResponse(responses.StreamingResponse):
     """Streaming response that also stops the generation when the connection or server ends."""
 
@@ -201,7 +307,10 @@ class _StreamingResponse(responses.StreamingResponse):
 
     async def __call__(self, scope, receive, send) -> None:
         """Log how the stream ended once it has, not when its headers went out."""
-        with log_utils.bind(request_id=self._exchange.request_id):
+        with (
+            log_utils.bind(request_id=self._exchange.request_id),
+            tracing.activate(self._exchange.context),
+        ):
             try:
                 await self._send_body(scope, receive, send)
             except asyncio.CancelledError:
@@ -331,6 +440,7 @@ def create_app(service) -> applications.Starlette:
             Exception: errors.internal_error_response,
         },
         lifespan=_lifespan,
+        middleware=[middleware.Middleware(_Lifetime)],
     )
     app.state.service = service
     return app

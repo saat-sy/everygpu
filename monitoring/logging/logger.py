@@ -9,6 +9,7 @@ import time
 import types
 
 from monitoring.logging import constants
+from monitoring.telemetry import tracing
 
 _FIELDS: contextvars.ContextVar[types.MappingProxyType] = contextvars.ContextVar(
     "everygpu_log_fields", default=types.MappingProxyType({})
@@ -22,6 +23,8 @@ class Formatter(logging.Formatter):
 
     def formatMessage(self, record: logging.LogRecord) -> str:
         fields = "".join(f" {key}={value}" for key, value in current().items())
+        if ids := tracing.log_fields():
+            fields += " trace_id=%s span_id=%s" % ids
         return super().formatMessage(record) + fields
 
 

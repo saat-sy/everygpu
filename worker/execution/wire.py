@@ -64,7 +64,8 @@ async def read_frame(stream: trio.abc.ReceiveStream) -> models.Frame | None:
     if not isinstance(meta, dict):
         raise models.ProtocolError("metadata is not a JSON object")
     payload = await _read_exactly(stream, payload_size(meta))
-    return models.Frame(msg_type, meta, payload)
+    size = constants.FRAME_HEADER.size + meta_len + len(payload)
+    return models.Frame(msg_type, meta, payload, size)
 
 
 async def _read_exactly(

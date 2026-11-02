@@ -25,6 +25,7 @@ class Frame:
     msg_type: int
     meta: dict
     payload: bytes = b""
+    size: int = dataclasses.field(default=0, compare=False)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,6 +84,7 @@ class ForwardRequest:
     shape: tuple[int, ...] | None = None
     dtype: str | None = None
     step: int = 0
+    trace: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True)

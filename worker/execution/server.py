@@ -3,11 +3,15 @@
 import dataclasses
 import itertools
 import logging
+import time
 import collections.abc
 
 import trio
 
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import constants as telemetry_constants
+from monitoring.telemetry import metrics
+from monitoring.telemetry import tracing
 from worker.execution import channel as channel_lib
 from worker.execution import models
 from worker.execution import route as route_lib
@@ -15,6 +19,11 @@ from worker.execution import sessions as sessions_lib
 from worker.utils import constants
 
 logger = logging.getLogger(__name__)
+_MESSAGE_NAMES = {
+    constants.MSG_ADMIT: "admit",
+    constants.MSG_FORWARD: "forward",
+    constants.MSG_RELEASE: "release",
+}
 
 ForwardHandler = collections.abc.Callable[
     [models.Session, dict, bytes],
@@ -62,7 +71,9 @@ class ExecutionServer:
                     return
                 if frame is None:
                     return
-                await channel.send(await self._respond(frame, owner))
+                received = time.monotonic()
+                reply = await self._respond(frame, owner)
+                await channel.send(_with_handling(reply, frame, received))
         except (trio.BrokenResourceError, trio.ClosedResourceError):
             pass
         except Exception:
@@ -87,10 +98,25 @@ class ExecutionServer:
         if frame.msg_type == constants.MSG_RESPONSE:
             raise models.RequestError("bad_request", "RESPONSE is not a request")
         session_id = _session_id(frame.meta)
-        with log_utils.bind(session_id=session_id):
+        attributes = {
+            "everygpu.message": _MESSAGE_NAMES.get(frame.msg_type, "unknown"),
+            "everygpu.session_id": session_id,
+        }
+        if isinstance(step := frame.meta.get("step"), int):
+            attributes["everygpu.step"] = step
+        parent = tracing.extract(frame.meta.get(telemetry_constants.TRACE_KEY))
+        with (
+            log_utils.bind(session_id=session_id),
+            tracing.span(
+                "worker.handle", attributes, parent=parent, kind="server"
+            ) as span,
+        ):
             try:
                 return await self._handle(frame, session_id, owner)
             except models.RequestError as error:
+                code = metrics.code_label(error.code)
+                span.set_attribute("everygpu.error_code", code)
+                metrics.record("worker.rejections", code=code)
                 admitting = frame.msg_type == constants.MSG_ADMIT
                 logger.log(
                     logging.WARNING if admitting else logging.DEBUG,
@@ -146,6 +172,20 @@ class ExecutionServer:
             raise models.RequestError(
                 "bad_route", "the route slot is not this worker's peer and stage"
             )
+
+
+def _with_handling(
+    reply: models.Frame, request: models.Frame, received: float
+) -> models.Frame:
+    """Adds this worker's handling time when the request came from a telemetry-aware sender."""
+    if tracing.clean(request.meta.get(telemetry_constants.TRACE_KEY)) is None:
+        return reply
+    reported = {
+        **reply.meta.get(telemetry_constants.TELEMETRY_KEY, {}),
+        "handling_seconds": time.monotonic() - received,
+    }
+    meta = {**reply.meta, telemetry_constants.TELEMETRY_KEY: reported}
+    return dataclasses.replace(reply, meta=meta)
 
 
 def _session_id(meta: dict) -> str:

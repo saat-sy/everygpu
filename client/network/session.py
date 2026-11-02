@@ -6,6 +6,8 @@ import trio
 
 from client.network import models
 from client.utils import constants
+from monitoring.telemetry import constants as telemetry_constants
+from monitoring.telemetry import tracing
 from worker.execution import channel as channel_lib
 from worker.execution import models as execution_models
 from worker.execution import route as route_lib
@@ -52,17 +54,23 @@ class Session:
         self.opened.clear()
 
     async def _release_one(self, hop: models.Hop) -> None:
-        frame = execution_models.Frame(
-            worker_constants.MSG_RELEASE, {"session_id": self.session_id}
-        )
+        meta = {"session_id": self.session_id}
         try:
-            stream = await trio.open_tcp_stream(hop.endpoint.host, hop.endpoint.port)
-            channel = channel_lib.Channel(stream)
-            try:
-                await channel.send(frame)
-                await channel.receive()
-            finally:
-                channel.abort()
+            with tracing.span(
+                "client.release", {"everygpu.target_peer": hop.peer}, kind="client"
+            ):
+                if carrier := tracing.carrier():
+                    meta[telemetry_constants.TRACE_KEY] = carrier
+                frame = execution_models.Frame(worker_constants.MSG_RELEASE, meta)
+                stream = await trio.open_tcp_stream(
+                    hop.endpoint.host, hop.endpoint.port
+                )
+                channel = channel_lib.Channel(stream)
+                try:
+                    await channel.send(frame)
+                    await channel.receive()
+                finally:
+                    channel.abort()
             logger.debug("session released peer=%s", hop.peer)
         except CONNECTION_ERRORS as error:
             logger.warning("session release failed peer=%s error=%s", hop.peer, error)

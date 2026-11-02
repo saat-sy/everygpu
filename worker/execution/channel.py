@@ -14,10 +14,12 @@ class Channel:
         self._send_lock = trio.Lock()
         self._receive_lock = trio.Lock()
 
-    async def send(self, frame: models.Frame) -> None:
+    async def send(self, frame: models.Frame) -> int:
+        """Send one whole frame; returns its wire bytes."""
         data = wire.encode(frame)
         async with self._send_lock:
             await self.stream.send_all(data)
+        return len(data)
 
     async def receive(self) -> models.Frame | None:
         async with self._receive_lock:

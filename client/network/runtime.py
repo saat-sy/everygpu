@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import threading
 
@@ -10,6 +11,7 @@ import trio
 from client.network import models
 from client.utils import constants
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import tracing
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,10 @@ class TrioRuntime:
 
     def start(self) -> None:
         self._thread = threading.Thread(
-            target=trio.run, args=(self._main,), name="everygpu-network", daemon=True
+            target=contextvars.copy_context().run,
+            args=(trio.run, self._main),
+            name="everygpu-network",
+            daemon=True,
         )
         self._thread.start()
         self._started.wait()
@@ -75,6 +80,7 @@ class Stream:
     def __init__(self, runtime: TrioRuntime):
         self._runtime = runtime
         self._fields = log_utils.current()
+        self._trace = tracing.current()
         self._loop = asyncio.get_running_loop()
         self._items: asyncio.Queue = asyncio.Queue()
         self._credits = trio.Semaphore(constants.STREAM_BUFFER_ITEMS)
@@ -111,7 +117,7 @@ class Stream:
 
     async def run(self, function, *args) -> None:
         """Trio side: drive the producer, then report how it ended."""
-        with log_utils.bind(**self._fields):
+        with log_utils.bind(**self._fields), tracing.activate(self._trace):
             try:
                 with self._scope:
                     await function(self._emit, *args)

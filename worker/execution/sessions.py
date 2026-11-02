@@ -1,5 +1,6 @@
 """Session table: admission, lookup and release of per-session execution state."""
 
+from monitoring.telemetry import metrics
 from worker.execution import models
 from worker.utils import constants
 
@@ -27,6 +28,7 @@ class SessionTable:
             raise models.RequestError("at_capacity", "no free session slot")
         session = models.Session(session_id, owner, route, index)
         self._sessions[session_id] = session
+        metrics.record("sessions.active", 1, side="worker")
         return session
 
     def get(self, session_id: str) -> models.Session:
@@ -47,6 +49,7 @@ class SessionTable:
             if link is not None:
                 link.abort()
             session.state.clear()
+            metrics.record("sessions.active", -1, side="worker")
         return session is not None
 
     def release_owned(self, owner: int) -> int:

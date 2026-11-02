@@ -10,6 +10,8 @@ import huggingface_hub.errors
 import trio
 
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import constants as telemetry_constants
+from monitoring.telemetry import lifecycle
 from model_partitioner.utils import constants as partitioner_constants
 from worker.commands import report
 from worker.commands import serve
@@ -101,6 +103,8 @@ def main() -> None:
     status = partitioner_constants.EXIT_FAILED
     started = time.monotonic()
     logger.info("%s starting", command)
+    if args.command is None:
+        lifecycle.configure(telemetry_constants.SERVICE_WORKER)
     try:
         status = trio.run(handler, args)
     except* KeyboardInterrupt:
@@ -116,6 +120,8 @@ def main() -> None:
         huggingface_hub.errors.HfHubHTTPError,
     ) as group:
         _log_errors(group)
+    finally:
+        lifecycle.shutdown()
     logger.info(
         "%s finished status=%d elapsed_ms=%d",
         command,

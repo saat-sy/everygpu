@@ -44,3 +44,6 @@ OUTCOME_FAILED = "failed"
 OUTCOME_DISCONNECTED = "disconnected"
 OUTCOME_CANCELLED = "cancelled"
 STATUS_CLIENT_CLOSED = 499
+PHASE_VALIDATION = "validation"
+PHASE_SETUP = "setup"
+PHASE_GENERATION = "generation"

@@ -6,6 +6,8 @@ import time
 import trio
 
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import device as device_telemetry
+from monitoring.telemetry import lifecycle
 from model_partitioner.artifact import hub
 from model_partitioner.utils import constants as partitioner_constants
 from worker.commands import onboard
@@ -33,7 +35,9 @@ async def run(args) -> int:
         total / constants.GIB,
         weight_budget / constants.GIB,
     )
+    device_telemetry.register()
     async with node.open_node(args.bootstrap) as dht:
+        lifecycle.identify(**{"everygpu.peer_id": str(dht.host.get_id())})
         for address in node.peer_addresses(dht):
             logger.info("bootstrap address=%s", address)
         if args.new_network:

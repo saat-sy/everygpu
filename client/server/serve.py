@@ -13,6 +13,8 @@ from client.server import app
 from client.server import config
 from client.utils import constants
 from monitoring.logging import logger as log_utils
+from monitoring.telemetry import constants as telemetry_constants
+from monitoring.telemetry import lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +57,13 @@ def run(argv: list[str]) -> int:
                 access_log=False,
             )
         )
+        lifecycle.configure(telemetry_constants.SERVICE_CLIENT)
         try:
             server.run(sockets=[sock])
         except KeyboardInterrupt:
             pass
+        finally:
+            lifecycle.shutdown()
     if not server.started:
         logger.error("server did not start")
         return 1
