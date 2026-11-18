@@ -10,7 +10,7 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from model_partitioner.utils import constants, models, tensor_utils
+from model_partitioner.utils import constants, models, path_utils, tensor_utils
 
 
 def read_manifest(artifact_dir: Path) -> models.Manifest:
@@ -88,7 +88,7 @@ class Artifact:
     def export_checkpoint(self, out_dir: Path) -> None:
         """Write original-named shards, index and assets that Transformers can load."""
         out_dir = Path(out_dir)
-        tensor_utils.require_empty_dir(out_dir)
+        path_utils.require_empty_dir(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         weight_map, shard, shard_bytes, names = {}, {}, 0, []
         for key, info in self.manifest.source_tensors.items():

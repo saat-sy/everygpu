@@ -2,6 +2,7 @@
 
 import contextlib
 import fnmatch
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -38,7 +39,7 @@ class LocalSource:
         return sorted(path.name for path in self.root.glob("*.safetensors"))
 
     def config(self) -> dict:
-        return json.loads((self.root / "config.json").read_text())
+        return json.loads((self.root / constants.CONFIG_NAME).read_text())
 
     def _handle(self, file: str):
         if file not in self._handles:
@@ -115,6 +116,19 @@ class LocalSource:
             if any(fnmatch.fnmatch(name, pat) for pat in constants.ASSET_PATTERNS)
         }
         return [self.root / name for name in sorted(matched)]
+
+
+def local_revision(root: Path, source_files: list[models.SourceFile]) -> str:
+    """Content identity of an unpinned local checkpoint; not a Hub commit."""
+    extras = [
+        name
+        for name in (constants.CONFIG_NAME, constants.INDEX_NAME)
+        if (root / name).is_file()
+    ]
+    parts = [(f.name, f.sha256) for f in source_files]
+    parts += [(name, tensor_utils.file_sha256(root / name)) for name in extras]
+    digest = hashlib.sha256(json.dumps(sorted(parts)).encode()).hexdigest()
+    return constants.LOCAL_REVISION_PREFIX + digest
 
 
 def copy_assets(source: LocalSource, dest: Path) -> dict[str, models.FileInfo]:

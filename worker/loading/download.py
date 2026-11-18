@@ -9,7 +9,7 @@ import huggingface_hub.constants
 
 from model_partitioner.utils import constants as partitioner_constants
 from monitoring.logging import logger as log_utils
-from model_partitioner.utils import models, tensor_utils
+from model_partitioner.utils import models, path_utils, tensor_utils
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def _check_space(
         )
     ]
     size = sum(manifest.files[f].size for f in missing)
-    free = tensor_utils.free_bytes(Path(huggingface_hub.constants.HF_HUB_CACHE))
+    free = path_utils.free_bytes(Path(huggingface_hub.constants.HF_HUB_CACHE))
     logger.info(
         "download starting files=%d of %d bytes=%d free_bytes=%d",
         len(missing),
